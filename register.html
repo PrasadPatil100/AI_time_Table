@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Register – Smart Timetable Management System</title>
+  <!-- Remix Icons -->
+  <link href="https://cdn.jsdelivr.net/npm/remixicon@3.5.0/fonts/remixicon.css" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body class="register-body">
+
+  <div class="register-card">
+    <div class="login-header">
+      <div class="brand-icon">
+        <i class="ri-calendar-event-line"></i>
+      </div>
+      <h2>Faculty Registration</h2>
+      <p>Create your faculty account and streamline your scheduling.</p>
+    </div>
+
+    <form id="register-form">
+      <div class="form-group">
+        <label class="form-label" for="full-name">Full Name <span class="req">*</span></label>
+        <div style="position: relative;">
+          <input type="text" id="full-name" class="form-control" placeholder="Enter your full name" required style="padding-left: 2.3rem;">
+          <i class="ri-user-line" style="position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="email">Email Address <span class="req">*</span></label>
+        <div style="position: relative;">
+          <input type="email" id="email" class="form-control" placeholder="you@institution.edu" required style="padding-left: 2.3rem;">
+          <i class="ri-mail-line" style="position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="department">Department <span class="req">*</span></label>
+        <div style="position: relative;">
+          <input type="text" id="department" class="form-control" placeholder="e.g. Computer Science" required style="padding-left: 2.3rem;">
+          <i class="ri-building-4-line" style="position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+        </div>
+      </div>
+
+      <input type="hidden" id="role" value="faculty">
+
+      <div class="form-group">
+        <label class="form-label" for="reg-password">Password <span class="req">*</span></label>
+        <div style="position: relative;">
+          <input type="password" id="reg-password" class="form-control" placeholder="Create a strong password" required style="padding-left: 2.3rem;">
+          <i class="ri-lock-line" style="position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label" for="reg-confirm-password">Confirm Password <span class="req">*</span></label>
+        <div style="position: relative;">
+          <input type="password" id="reg-confirm-password" class="form-control" placeholder="Repeat your password" required style="padding-left: 2.3rem;">
+          <i class="ri-lock-2-line" style="position: absolute; left: 0.8rem; top: 50%; transform: translateY(-50%); color: var(--text-muted);"></i>
+        </div>
+      </div>
+
+      <div style="margin-top: 1.5rem;">
+        <button type="submit" class="btn btn-primary btn-block">
+          <i class="ri-user-add-line"></i> Create Account
+        </button>
+        <a href="login.html" class="forgotpass" style="margin-top: 1rem;">
+          Already have an account? Login
+        </a>
+      </div>
+    </form>
+  </div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+      const form = document.getElementById('register-form');
+
+      form.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const password = document.getElementById('reg-password').value;
+        const confirm = document.getElementById('reg-confirm-password').value;
+
+        if (password !== confirm) {
+          alert('Passwords do not match!');
+          return;
+        }
+
+          const role = 'faculty';
+          const userData = {
+            name: document.getElementById('full-name').value.trim(),
+            email: document.getElementById('email').value.trim(),
+            department: document.getElementById('department').value.trim(),
+            role: role,
+            password: password // stored locally for this static demo (no backend)
+          };
+
+        // Store registration data for potential backend integration
+        localStorage.setItem('timetable_registration', JSON.stringify(userData));
+        alert('Account created successfully! Redirecting to login...');
+        window.location.href = 'login.html';
+      });
+    });
+  </script>
+
+</body>
+</html>
