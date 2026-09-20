@@ -32,6 +32,11 @@ export type ActivityType =
   | 'Elective'
   | 'Other';
 
+export type TimetableActivityType =
+  | 'WHOLE_DIVISION'
+  | 'PARALLEL_BATCH'
+  | 'ROTATIONAL_BATCH';
+
 export type StudentGroup = 'Whole Division' | 'TB1' | 'TB2' | 'TB3';
 
 export interface Subject {
@@ -47,6 +52,7 @@ export interface Subject {
   textClass: string;
   /** Optional metadata for richer activities; omitted values keep current behavior. */
   activityType?: ActivityType;
+  activityMode?: TimetableActivityType;
   studentGroup?: StudentGroup;
   durationPeriods?: 1 | 2;
   isLab?: boolean;
@@ -80,6 +86,8 @@ export interface TimetableActivity {
   room: string;
   durationPeriods: 1 | 2;
   activityType: ActivityType;
+  activityMode?: TimetableActivityType;
+  isLab?: boolean;
 }
 
 export interface TimetableCell {

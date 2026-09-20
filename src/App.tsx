@@ -101,6 +101,25 @@ export default function App() {
   const [timetable, setTimetable] =
     useState<GeneratedTimetable | null>(null);
 
+  const getCompatibleTimetable = (
+    departmentId: string,
+    year: AcademicYear,
+    divisionId: string
+  ) => {
+    const existing = getTimetable(departmentId, year, divisionId);
+    if (!existing) return null;
+
+    const canonicalSubjects = getDefaultSubjects(
+      departmentId,
+      departments.find((department) => department.id === departmentId)?.name || '',
+      year
+    );
+    const canonicalIds = new Set(canonicalSubjects.map((subject) => subject.id));
+    const hasCanonicalSubject = existing.subjects?.some((subject) => canonicalIds.has(subject.id));
+
+    return hasCanonicalSubject ? existing : null;
+  };
+
 
   // =========================================================
   // DEPARTMENT SELECTION
@@ -121,11 +140,7 @@ export default function App() {
     );
 
     const existing = selectedDivision
-      ? getTimetable(
-          dept.id,
-          selectedYear,
-          selectedDivision.id
-        )
+      ? getCompatibleTimetable(dept.id, selectedYear, selectedDivision.id)
       : null;
 
     setTimetable(existing || null);
@@ -153,11 +168,7 @@ export default function App() {
       );
 
       const existing = selectedDivision
-        ? getTimetable(
-            selectedDepartment.id,
-            year,
-            selectedDivision.id
-          )
+        ? getCompatibleTimetable(selectedDepartment.id, year, selectedDivision.id)
         : null;
 
       setTimetable(existing || null);
@@ -177,7 +188,7 @@ export default function App() {
 
     if (selectedDepartment) {
 
-      const existing = getTimetable(
+      const existing = getCompatibleTimetable(
         selectedDepartment.id,
         selectedYear,
         div.id
@@ -204,7 +215,6 @@ export default function App() {
 
     setSelectedDivision(tt.division);
 
-    setSubjects(tt.subjects);
   };
 
 
