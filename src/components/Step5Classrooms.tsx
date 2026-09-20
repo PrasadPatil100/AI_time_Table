@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { AcademicYear, Department, Division, Subject } from '../types';
 import {
   AlertTriangle,
@@ -28,6 +28,8 @@ interface Step5ClassroomsProps {
 type AllocationKind = 'theory' | 'lab';
 
 const isLabSubject = (subject: Subject) => subject.isLab || subject.roomType === 'lab';
+const defaultTheoryRooms = [1, 2, 3, 4, 5, 6, 7];
+const defaultLabRooms = [1, 2, 3, 4, 5];
 
 const activityLabel = (subject: Subject) => subject.activityType || (isLabSubject(subject) ? 'Lab' : 'Theory');
 
@@ -47,6 +49,25 @@ export const Step5Classrooms: React.FC<Step5ClassroomsProps> = ({
   onNext,
 }) => {
   const [activeKind, setActiveKind] = useState<AllocationKind>('theory');
+
+  useEffect(() => {
+    let theoryIndex = 0;
+    let labIndex = 0;
+    let changed = false;
+    const initializedSubjects = subjects.map((subject) => {
+      if (subject.classroomNumber) return subject;
+      changed = true;
+      const lab = isLabSubject(subject);
+      const roomPool = lab ? defaultLabRooms : defaultTheoryRooms;
+      const roomIndex = lab ? labIndex++ : theoryIndex++;
+      return {
+        ...subject,
+        classroomNumber: roomPool[roomIndex % roomPool.length],
+        roomType: lab ? 'lab' : subject.roomType || 'lecture',
+      };
+    });
+    if (changed) onChangeSubjects(initializedSubjects);
+  }, [onChangeSubjects, subjects]);
 
   const theorySubjects = subjects.filter((subject) => !isLabSubject(subject));
   const labSubjects = subjects.filter(isLabSubject);

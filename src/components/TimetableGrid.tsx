@@ -117,24 +117,33 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({
                   {/* Period Cells */}
                   {timeSlots.map((slot, sIdx) => {
                     const cell = rowCells[sIdx];
-
+                    const activities = cell ? normalizeCellActivities(cell) : [];
                     const nextCell = rowCells[sIdx + 1];
+                    const nextActivities = nextCell ? normalizeCellActivities(nextCell) : [];
+                    const previousCell = rowCells[sIdx - 1];
+                    const previousActivities = previousCell ? normalizeCellActivities(previousCell) : [];
+                    const sameLabActivity = (left: (typeof activities)[number], right: (typeof activities)[number]) =>
+                      left.isLab && left.durationPeriods === 2 &&
+                      right.isLab && right.durationPeriods === 2 &&
+                      left.subject.id === right.subject.id &&
+                      left.studentGroup === right.studentGroup &&
+                      left.room === right.room;
                     const isMergedLabStart = Boolean(
-                      cell?.isLabSession &&
-                      cell.labBlockPart === 1 &&
-                      nextCell?.isLabSession &&
-                      nextCell.labBlockPart === 2 &&
+                      !slot.isBreak &&
+                      nextCell &&
+                      !nextCell.isBreak &&
                       nextCell.periodIndex === sIdx + 1 &&
-                      nextCell.subject?.id === cell.subject?.id &&
-                      nextCell.room === cell.room
+                      activities.some((activity) =>
+                        nextActivities.some((nextActivity) => sameLabActivity(activity, nextActivity))
+                      )
                     );
                     const isMergedLabContinuation = Boolean(
-                      cell?.isLabSession &&
-                      cell.labBlockPart === 2 &&
-                      rowCells[sIdx - 1]?.isLabSession &&
-                      rowCells[sIdx - 1]?.labBlockPart === 1 &&
-                      rowCells[sIdx - 1]?.subject?.id === cell.subject?.id &&
-                      rowCells[sIdx - 1]?.room === cell.room
+                      !slot.isBreak &&
+                      previousCell &&
+                      !previousCell.isBreak &&
+                      previousActivities.some((previousActivity) =>
+                        activities.some((activity) => sameLabActivity(previousActivity, activity))
+                      )
                     );
 
                     if (isMergedLabContinuation) return null;
@@ -160,7 +169,6 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({
                     }
 
                     // Regular teaching slot
-                    const activities = cell ? normalizeCellActivities(cell) : [];
                     const subject = activities[0]?.subject;
                     const isMatchedSubject =
                       highlightSubjectId && activities.some((activity) =>

@@ -26,6 +26,7 @@ import {
   getDivisionWorkload,
   getPlacedDivisionPeriods,
 } from './timetableOccupancy';
+import { normalizeCellActivities } from './timetableActivities';
 
 type Allocation = { subject: Subject; group: StudentGroup };
 type Task = {
@@ -252,8 +253,52 @@ export function generateNewTimetableGrid(
   const tasks = createTasks();
   const placedPeriods = new Map<string, number>();
   const placedSubjectPeriods = new Map<string, number>();
+  const isWholeDivisionTheory = (task: Task) =>
+    !task.lab && task.allocations.every(({ group, subject }) =>
+      group === 'Whole Division' && !labFor(subject)
+    );
+  const sameSubjectDayCount = (task: Task, day: DayOfWeek) => {
+    const subjectIds = new Set(task.allocations.map(({ subject }) => subject.id));
+    return (grid[day] || []).reduce((count, cell) => {
+      if (!cell || cell.isBreak) return count;
+      const activities = cell.activities?.length
+        ? cell.activities
+        : cell.subject ? [activityFor(cell.subject, cell.room || '')] : [];
+      return count + activities.filter((activity) => subjectIds.has(activity.subject.id)).length;
+    }, 0);
+  };
+  const hasQualifyingActivity = (cell: TimetableCell) =>
+    normalizeCellActivities(cell).some((activity) =>
+      activity.isLab ||
+      activity.activityType === 'Lab' ||
+      activity.activityMode === 'PARALLEL_BATCH' ||
+      activity.activityMode === 'ROTATIONAL_BATCH'
+    );
+  const hasQualifyingActivityEveryDay = () =>
+    days.every((day) => (grid[day] || []).some((cell) =>
+      Boolean(cell && !cell.isBreak && hasQualifyingActivity(cell))
+    ));
+  const isQualifyingTask = (task: Task) =>
+    task.lab || task.allocations.some(({ subject }) =>
+      subject.activityType === 'Lab' ||
+      subject.activityMode === 'PARALLEL_BATCH' ||
+      subject.activityMode === 'ROTATIONAL_BATCH'
+    );
+  const qualifyingDaysPlaced = () =>
+    days.filter((day) => (grid[day] || []).some((cell) =>
+      Boolean(cell && !cell.isBreak && hasQualifyingActivity(cell))
+    )).length;
   const taskCandidates = (task: Task) => days.flatMap((day) => blocksFor(task.duration).map((block) => ({ day, block })))
     .sort((left, right) =>
+      (isQualifyingTask(task)
+        ? Number(days.some((day) => day === right.day && !(grid[day] || []).some((cell) =>
+          Boolean(cell && !cell.isBreak && hasQualifyingActivity(cell))))) -
+          Number(days.some((day) => day === left.day && !(grid[day] || []).some((cell) =>
+            Boolean(cell && !cell.isBreak && hasQualifyingActivity(cell)))))
+        : 0) ||
+      (isWholeDivisionTheory(task)
+        ? sameSubjectDayCount(task, left.day) - sameSubjectDayCount(task, right.day)
+        : 0) ||
       Number(right.block[0] >= 3) - Number(left.block[0] >= 3) ||
       left.day.localeCompare(right.day) || left.block[0] - right.block[0]
     );
@@ -263,6 +308,7 @@ export function generateNewTimetableGrid(
       breakViolations++;
       return null;
     }
+    if (isWholeDivisionTheory(task) && sameSubjectDayCount(task, day) > 0) return null;
     const assignments: Assignment[] = [];
     for (const slot of block) {
       if (grid[day][slot]?.isBreak) return null;
@@ -380,7 +426,10 @@ export function generateNewTimetableGrid(
   };
 
   const search = (index: number): number => {
-    if (index >= tasks.length) return 0;
+    if (index >= tasks.length) return hasQualifyingActivityEveryDay() ? 0 : Number.NEGATIVE_INFINITY;
+    const missingQualifyingDays = days.length - qualifyingDaysPlaced();
+    const remainingQualifyingTasks = tasks.slice(index).filter(isQualifyingTask).length;
+    if (remainingQualifyingTasks < missingQualifyingDays) return Number.NEGATIVE_INFINITY;
     const task = tasks[index];
     const baseline = snapshot();
     const remainingRequired = tasks
@@ -411,7 +460,11 @@ export function generateNewTimetableGrid(
     restore(bestState);
     return bestScore;
   };
-  if (divisionWorkload.excessPeriods === 0) search(0);
+  const qualifyingTaskCount = tasks.filter(isQualifyingTask).length;
+  if (divisionWorkload.excessPeriods === 0 && qualifyingTaskCount >= days.length) search(0);
+  else if (qualifyingTaskCount < days.length) {
+    warnings.push(`At least ${days.length} teaching days require qualifying activities, but only ${qualifyingTaskCount} qualifying task blocks are configured.`);
+  }
   placedSubjectPeriods.clear();
   days.forEach((day) => TEACHING_SLOTS.forEach((slot) => {
     const cell = grid[day][slot];
