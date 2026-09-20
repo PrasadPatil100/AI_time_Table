@@ -1,5 +1,6 @@
 import React from 'react';
 import { GeneratedTimetable } from '../types';
+import { normalizeCellActivities } from '../utils/timetableActivities';
 import { X, UserCheck, Clock, Calendar, CheckCircle } from 'lucide-react';
 
 interface TeacherWorkloadModalProps {
@@ -26,25 +27,33 @@ export const TeacherWorkloadModal: React.FC<TeacherWorkloadModalProps> = ({
       totalPeriods: number;
       subjects: Set<string>;
       daysActive: Set<string>;
+      occupiedSlots: Set<string>;
     }
   > = {};
 
   days.forEach((day) => {
-    (grid[day] || []).forEach((cell) => {
-      if (cell?.subject && !cell.isBreak) {
-        const tName = cell.subject.teacherName || 'Unassigned';
+    (grid[day] || []).forEach((cell, periodIndex) => {
+      if (!cell || cell.isBreak) return;
+      normalizeCellActivities(cell).forEach((activity) => {
+        const tName = activity.teacher || 'Unassigned';
         if (!teacherStatsMap[tName]) {
           teacherStatsMap[tName] = {
             teacherName: tName,
             totalPeriods: 0,
             subjects: new Set(),
             daysActive: new Set(),
+            occupiedSlots: new Set(),
           };
         }
-        teacherStatsMap[tName].totalPeriods += 1;
-        teacherStatsMap[tName].subjects.add(cell.subject.name);
-        teacherStatsMap[tName].daysActive.add(day);
-      }
+        const teacherSlotKey = `${day}-${periodIndex}`;
+        const teacherStat = teacherStatsMap[tName];
+        if (!teacherStat.occupiedSlots.has(teacherSlotKey)) {
+          teacherStat.totalPeriods += 1;
+        }
+        teacherStat.subjects.add(activity.subject.name);
+        teacherStat.daysActive.add(day);
+        teacherStat.occupiedSlots.add(teacherSlotKey);
+      });
     });
   });
 

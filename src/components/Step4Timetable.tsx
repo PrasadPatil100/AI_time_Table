@@ -414,6 +414,7 @@ export const Step4Timetable: React.FC<Step4TimetableProps> = ({
             <GenerationReportCard
               report={timetable.generationReport}
               divisionName={division.name}
+              timetable={timetable}
             />
           )}
 

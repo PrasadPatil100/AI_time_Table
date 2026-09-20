@@ -14,23 +14,31 @@ import {
   Utensils,
   Sparkles,
 } from 'lucide-react';
-import { GenerationReport } from '../types';
+import { GeneratedTimetable, GenerationReport } from '../types';
+import {
+  getDetailedLabAllocations,
+  getTimetableReportingMetrics,
+} from '../utils/timetableReporting';
 
 interface GenerationReportCardProps {
   report: GenerationReport;
   divisionName: string;
+  timetable: GeneratedTimetable;
 }
 
 export const GenerationReportCard: React.FC<GenerationReportCardProps> = ({
   report,
   divisionName,
+  timetable,
 }) => {
   const [showClashDetails, setShowClashDetails] = useState(false);
   const [showLabDetails, setShowLabDetails] = useState(false);
+  const metrics = getTimetableReportingMetrics(timetable);
+  const detailedLabAllocations = getDetailedLabAllocations(timetable);
 
   const hasWarnings = report.warningMessages && report.warningMessages.length > 0;
   const hasClashesResolved = report.clashDetails && report.clashDetails.length > 0;
-  const hasLabs = report.labAllocations && report.labAllocations.length > 0;
+  const hasLabs = detailedLabAllocations.length > 0;
 
   return (
     <div className="bg-white rounded-2xl border border-slate-200/90 shadow-sm overflow-hidden print:hidden transition-all">
@@ -75,11 +83,15 @@ export const GenerationReportCard: React.FC<GenerationReportCardProps> = ({
                 </span>
                 <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-800 border border-indigo-200 flex items-center gap-1">
                   <Sparkles className="w-3 h-3 text-indigo-600" />
-                  <span>0 Free Slots • Fully Busy</span>
+                  <span>{metrics.freeSlots} Free Slots</span>
                 </span>
               </div>
               <p className="text-xs sm:text-sm text-slate-600 mt-0.5 leading-relaxed">
                 {report.successMessage}
+              </p>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Allocated {metrics.allocatedPeriods} of {metrics.requiredPeriods} required periods;
+                {' '}{metrics.unallocatedPeriods} periods unallocated.
               </p>
             </div>
           </div>
@@ -87,9 +99,15 @@ export const GenerationReportCard: React.FC<GenerationReportCardProps> = ({
           {/* Quick Metrics */}
           <div className="flex items-center gap-2 self-start sm:self-auto shrink-0 flex-wrap">
             <div className="bg-white/90 border border-slate-200/80 rounded-xl px-3 py-1.5 text-center shadow-2xs">
-              <span className="block text-xs text-slate-500 font-medium">Slots Occupied</span>
+              <span className="block text-xs text-slate-500 font-medium">Allocated Periods</span>
               <span className="text-sm font-extrabold text-slate-800">
-                {report.totalPlacedPeriods} / 36
+                {metrics.allocatedPeriods} / {metrics.requiredPeriods}
+              </span>
+            </div>
+            <div className="bg-white/90 border border-slate-200/80 rounded-xl px-3 py-1.5 text-center shadow-2xs">
+              <span className="block text-xs text-slate-500 font-medium">Unallocated</span>
+              <span className="text-sm font-extrabold text-amber-700">
+                {metrics.unallocatedPeriods}
               </span>
             </div>
             <div className="bg-white/90 border border-slate-200/80 rounded-xl px-3 py-1.5 text-center shadow-2xs">
@@ -134,7 +152,9 @@ export const GenerationReportCard: React.FC<GenerationReportCardProps> = ({
           <FlaskConical className="w-4 h-4 text-purple-600 shrink-0" />
           <div>
             <span className="font-semibold block text-slate-900">Requested practical blocks</span>
-            <span className="text-[11px] text-slate-500">Two consecutive periods when configured</span>
+            <span className="text-[11px] text-slate-500">
+              {metrics.labSessions}/{metrics.requiredLabSessions} sessions; {metrics.labOccupiedPeriods} occupied periods
+            </span>
           </div>
         </div>
       </div>
@@ -229,7 +249,7 @@ export const GenerationReportCard: React.FC<GenerationReportCardProps> = ({
             <span className="flex items-center gap-1.5 text-purple-700">
               <FlaskConical className="w-4 h-4 text-purple-600" />
               <span>
-                Practical Labs ({report.labAllocations.length} Sessions) • Two-period blocks when configured
+                Practical Labs ({detailedLabAllocations.length} Sessions) • {metrics.batchAllocations} batch allocations
               </span>
             </span>
             <span className="flex items-center gap-1 text-slate-400">
@@ -251,9 +271,9 @@ export const GenerationReportCard: React.FC<GenerationReportCardProps> = ({
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-2.5">
-                {report.labAllocations.map((lab) => (
+                {detailedLabAllocations.map((lab) => (
                   <div
-                    key={lab.subjectId}
+                    key={`${lab.day}-${lab.periodNumber}-${lab.studentGroup}-${lab.subjectId}-${lab.room}`}
                     className="p-3 bg-white rounded-xl border border-purple-200 shadow-2xs flex flex-col justify-between"
                   >
                     <div>
@@ -265,6 +285,9 @@ export const GenerationReportCard: React.FC<GenerationReportCardProps> = ({
                           {lab.room}
                         </span>
                       </div>
+                      <div className="text-[10px] font-bold text-indigo-700 mb-1">
+                        {lab.studentGroup}
+                      </div>
                       <div className="font-bold text-slate-900 text-xs leading-snug">
                         {lab.subjectName}
                       </div>
@@ -275,10 +298,10 @@ export const GenerationReportCard: React.FC<GenerationReportCardProps> = ({
 
                     <div className="mt-2.5 pt-2 border-t border-slate-100 flex items-center justify-between text-[10px]">
                       <span className="px-2 py-0.5 rounded bg-indigo-50 text-indigo-800 font-bold">
-                        Every {lab.day}
+                        {lab.day} • P{lab.periodNumbers.join(' + P')}
                       </span>
                       <span className="text-slate-600 font-mono font-semibold">
-                        {lab.startTime} – {lab.endTime} (2 hrs)
+                        {lab.startTime} – {lab.endTime} ({lab.durationHours} hrs)
                       </span>
                     </div>
                   </div>

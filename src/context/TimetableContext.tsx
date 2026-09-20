@@ -6,6 +6,7 @@ import {
   Division,
   GeneratedTimetable,
 } from '../types';
+import { normalizeCellActivities } from '../utils/timetableActivities';
 
 export interface TeacherSlotAssignment {
   teacherName: string;
@@ -145,9 +146,11 @@ export const TimetableProvider: React.FC<{ children: React.ReactNode }> = ({
       days.forEach((day) => {
         const slots = tt.grid[day] || [];
         slots.forEach((cell, pIdx) => {
-          if (cell && !cell.isBreak && cell.subject?.teacherName) {
+          if (!cell || cell.isBreak) return;
+          normalizeCellActivities(cell).forEach((activity) => {
+            if (!activity.teacher) return;
             assignments.push({
-              teacherName: cell.subject.teacherName,
+              teacherName: activity.teacher,
               day,
               periodIndex: pIdx,
               periodNumber: cell.timeSlot?.periodNumber || pIdx + 1,
@@ -156,11 +159,11 @@ export const TimetableProvider: React.FC<{ children: React.ReactNode }> = ({
               year: tt.year,
               divisionId: tt.division.id,
               divisionName: tt.division.name,
-              subjectName: cell.subject.name,
-              subjectCode: cell.subject.code,
-              room: cell.room,
+              subjectName: activity.subject.name,
+              subjectCode: activity.subject.code,
+              room: activity.room || cell.room,
             });
-          }
+          });
         });
       });
     });
