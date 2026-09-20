@@ -288,6 +288,8 @@ export function generateNewTimetableGrid(
     days.filter((day) => (grid[day] || []).some((cell) =>
       Boolean(cell && !cell.isBreak && hasQualifyingActivity(cell))
     )).length;
+  const qualifyingTaskCount = tasks.filter(isQualifyingTask).length;
+  const qualifyingDayTarget = Math.min(days.length, qualifyingTaskCount);
   const taskCandidates = (task: Task) => days.flatMap((day) => blocksFor(task.duration).map((block) => ({ day, block })))
     .sort((left, right) =>
       (isQualifyingTask(task)
@@ -426,8 +428,10 @@ export function generateNewTimetableGrid(
   };
 
   const search = (index: number): number => {
-    if (index >= tasks.length) return hasQualifyingActivityEveryDay() ? 0 : Number.NEGATIVE_INFINITY;
-    const missingQualifyingDays = days.length - qualifyingDaysPlaced();
+    if (index >= tasks.length) {
+      return qualifyingDaysPlaced() >= qualifyingDayTarget ? 0 : Number.NEGATIVE_INFINITY;
+    }
+    const missingQualifyingDays = qualifyingDayTarget - qualifyingDaysPlaced();
     const remainingQualifyingTasks = tasks.slice(index).filter(isQualifyingTask).length;
     if (remainingQualifyingTasks < missingQualifyingDays) return Number.NEGATIVE_INFINITY;
     const task = tasks[index];
@@ -460,11 +464,7 @@ export function generateNewTimetableGrid(
     restore(bestState);
     return bestScore;
   };
-  const qualifyingTaskCount = tasks.filter(isQualifyingTask).length;
-  if (divisionWorkload.excessPeriods === 0 && qualifyingTaskCount >= days.length) search(0);
-  else if (qualifyingTaskCount < days.length) {
-    warnings.push(`At least ${days.length} teaching days require qualifying activities, but only ${qualifyingTaskCount} qualifying task blocks are configured.`);
-  }
+  if (divisionWorkload.excessPeriods === 0) search(0);
   placedSubjectPeriods.clear();
   days.forEach((day) => TEACHING_SLOTS.forEach((slot) => {
     const cell = grid[day][slot];
