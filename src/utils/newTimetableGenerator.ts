@@ -11,66 +11,45 @@ import {
   StudentGroup,
   Subject,
   TimetableActivity,
+  TimetableActivityType,
   TimetableCell,
   TimetableSettings,
   UnplacedSubject,
 } from '../types';
 import {
-  DEFAULT_TIMETABLE_SETTINGS,
   DEFAULT_DAYS,
+  DEFAULT_TIMETABLE_SETTINGS,
   generateTimeSlots,
   isLabSubject,
 } from './timetableGenerator';
 
-const GROUPS: StudentGroup[] = ['Whole Division', 'TB1', 'TB2', 'TB3'];
-
-interface Allocation {
-  subject: Subject;
-  group: StudentGroup;
-}
-
-interface ActivityGroup {
+type Allocation = { subject: Subject; group: StudentGroup };
+type Task = {
   key: string;
-  logicalKey?: string;
-  name: string;
   allocations: Allocation[];
-  requestedPeriods: number;
-  durationPeriods: 1 | 2;
-  isBatch: boolean;
-  isLab: boolean;
-  isSequentialBatch: boolean;
-}
-
-interface BusySlot {
-  teacher: string;
-  room: string;
-  group: StudentGroup;
-}
-
-const normalized = (value: string) => value.trim().toLowerCase();
-
-const groupFor = (subject: Subject): StudentGroup => subject.studentGroup || 'Whole Division';
-
-const activityTypeFor = (subject: Subject): ActivityType =>
-  subject.activityType || (isLabSubject(subject) ? 'Lab' : 'Theory');
-
-const durationFor = (subject: Subject): 1 | 2 =>
-  subject.durationPeriods || (isLabSubject(subject) ? 2 : 1);
-
-const roomTypeFor = (subject: Subject): 'lecture' | 'lab' | 'any' =>
-  subject.roomType || (isLabSubject(subject) ? 'lab' : 'lecture');
-
-const conflictsWith = (left: StudentGroup, right: StudentGroup) =>
-  left === 'Whole Division' || right === 'Whole Division' || left === right;
-
-const batchKeyFor = (subject: Subject) => {
-  const codeKey = subject.code.replace(/[-_\s]?TB[1-3]$/i, '').trim();
-  const nameKey = subject.name.replace(/\s*[-_]?(TB[1-3])\s*$/i, '').trim();
-  return normalized(codeKey || nameKey || subject.id);
+  duration: 1 | 2;
+  lab: boolean;
+  requiredPeriods: number;
 };
+type Assignment = { allocation: Allocation; room: string; slot: number };
 
-const isBatchSubject = (subject: Subject) => groupFor(subject) !== 'Whole Division';
-
+const BATCHES: StudentGroup[] = ['TB1', 'TB2', 'TB3'];
+const TEACHING_SLOTS = [0, 1, 3, 4, 6, 7];
+const normalize = (value: string) => value.trim().toLowerCase();
+const groupFor = (subject: Subject): StudentGroup => subject.studentGroup || 'Whole Division';
+const labFor = (subject: Subject) => isLabSubject(subject);
+const durationFor = (subject: Subject): 1 | 2 => subject.durationPeriods || (labFor(subject) ? 2 : 1);
+const roomTypeFor = (subject: Subject): 'lecture' | 'lab' | 'any' =>
+  subject.roomType || (labFor(subject) ? 'lab' : 'lecture');
+const modeFor = (subject: Subject): TimetableActivityType =>
+  subject.activityMode || (groupFor(subject) === 'Whole Division' ? 'WHOLE_DIVISION' : 'ROTATIONAL_BATCH');
+const activityTypeFor = (subject: Subject): ActivityType =>
+  subject.activityType || (labFor(subject) ? 'Lab' : 'Theory');
+const batchKeyFor = (subject: Subject) => {
+  const code = subject.code.replace(/[-_\s]?TB[1-3]$/i, '').trim();
+  const name = subject.name.replace(/\s*[-_]?(TB[1-3])\s*$/i, '').trim();
+  return normalize(code || name || subject.id);
+};
 const activityFor = (subject: Subject, room: string): TimetableActivity => ({
   subject,
   studentGroup: groupFor(subject),
@@ -78,20 +57,15 @@ const activityFor = (subject: Subject, room: string): TimetableActivity => ({
   room,
   durationPeriods: durationFor(subject),
   activityType: activityTypeFor(subject),
+  activityMode: modeFor(subject),
+  activityGroupId: subject.activityGroupId,
+  isLab: labFor(subject),
 });
-
-const roomNameFor = (subject: Subject) => {
-  const type = roomTypeFor(subject);
-  if (subject.classroomNumber) {
-    return type === 'lab' ? `Lab ${subject.classroomNumber}` : `Room ${subject.classroomNumber}`;
-  }
-  return '';
-};
-
-const roomMatchesType = (room: string, type: 'lecture' | 'lab' | 'any') => {
-  const isLab = /^lab\s/i.test(room);
-  return type === 'any' || (type === 'lab' ? isLab : !isLab);
-};
+const divisionKey = (department: Department, year: AcademicYear, division: Division) =>
+  `${department.id}::y${year}::${division.id}`;
+const batchKey = (division: string, group: StudentGroup) => `${division}::${group}`;
+const resourceKey = (value: string, day: DayOfWeek, slot: number) =>
+  `${normalize(value)}::${day}::${slot}`;
 
 export function generateNewTimetableGrid(
   department: Department,
@@ -111,12 +85,10 @@ export function generateNewTimetableGrid(
   };
   const timeSlots = generateTimeSlots(settings);
   const days = settings.days;
-  const teachingSlots = [0, 1, 3, 4, 6, 7];
-  const totalWeeklySlots = days.length * teachingSlots.length;
+  const divisionId = divisionKey(department, year, division);
   const grid: Record<DayOfWeek, (TimetableCell | null)[]> = {
     Monday: [], Tuesday: [], Wednesday: [], Thursday: [], Friday: [], Saturday: [],
   };
-
   days.forEach((day) => {
     grid[day] = timeSlots.map((slot, periodIndex) => slot.isBreak ? {
       id: `${day}-break-${periodIndex}`,
@@ -128,246 +100,197 @@ export function generateNewTimetableGrid(
     } : null);
   });
 
-  const teacherBusy = new Map<string, BusySlot>();
-  const roomBusy = new Map<string, string>();
-  const groupBusy = new Map<string, string>();
-  const keyFor = (value: string, day: DayOfWeek, slot: number) => `${normalized(value)}__${day}__${slot}`;
-  const groupKeyFor = (group: StudentGroup, day: DayOfWeek, slot: number) => `${group}__${day}__${slot}`;
-
+  const teacherBusy = new Set<string>();
+  const roomBusy = new Set<string>();
+  const batchBusy = new Set<string>();
+  const divisionBusy = new Set<string>();
+  const key = (value: string, day: DayOfWeek, slot: number) => resourceKey(value, day, slot);
+  const markExternal = (timetable: GeneratedTimetable) => {
+    const externalDivision = divisionKey(timetable.department, timetable.year, timetable.division);
+    Object.entries(timetable.grid).forEach(([day, cells]) => (cells || []).forEach((cell, slot) => {
+      if (!cell || cell.isBreak) return;
+      const activities = cell.activities?.length
+        ? cell.activities
+        : cell.subject ? [activityFor(cell.subject, cell.room || '')] : [];
+      activities.forEach((activity) => {
+        if (activity.teacher && normalize(activity.teacher) !== 'tbd') {
+          teacherBusy.add(key(activity.teacher, day as DayOfWeek, slot));
+        }
+        if (activity.room) roomBusy.add(key(activity.room, day as DayOfWeek, slot));
+        const groups = activity.studentGroup === 'Whole Division'
+          ? BATCHES
+          : [activity.studentGroup];
+        groups.forEach((group) => batchBusy.add(`${batchKey(externalDivision, group)}::${day}::${slot}`));
+        if (activity.studentGroup === 'Whole Division') {
+          divisionBusy.add(`${externalDivision}::${day}::${slot}`);
+        }
+      });
+    }));
+  };
   existingTimetables.forEach((timetable) => {
     const otherKey = timetable.timetableKey || `${timetable.department.id}-y${timetable.year}-${timetable.division.id}`;
-    if (otherKey === timetableKey) return;
-    Object.entries(timetable.grid).forEach(([day, cells]) => {
-      (cells || []).forEach((cell, slot) => {
-        if (!cell || cell.isBreak) return;
-        const activities = cell.activities || (cell.subject ? [activityFor(cell.subject, cell.room || '')] : []);
-        activities.forEach((activity) => {
-          if (activity.teacher && normalized(activity.teacher) !== 'tbd') {
-            teacherBusy.set(keyFor(activity.teacher, day as DayOfWeek, slot), {
-              teacher: activity.teacher,
-              room: activity.room,
-              group: activity.studentGroup,
-            });
-          }
-          if (activity.room) {
-            roomBusy.set(keyFor(activity.room, day as DayOfWeek, slot),
-              `${timetable.department.name} (Yr ${timetable.year} Div ${timetable.division.name})`);
-          }
-          groupBusy.set(groupKeyFor(activity.studentGroup, day as DayOfWeek, slot),
-            `${timetable.department.name} (Yr ${timetable.year} Div ${timetable.division.name})`);
-        });
-      });
-    });
+    if (otherKey !== timetableKey) markExternal(timetable);
   });
 
+  const localTeacherBusy = new Set<string>();
+  const localRoomBusy = new Set<string>();
+  const localBatchBusy = new Set<string>();
   const warnings: string[] = [];
   const clashes: ClashDetail[] = [];
-  const unplaced: UnplacedSubject[] = [];
   const labAllocations: LabAllocation[] = [];
-  let teacherConflictAttempts = 0;
-  let roomConflictAttempts = 0;
-  let groupConflictAttempts = 0;
+  const unplaced: UnplacedSubject[] = [];
+  let rejectedTeachers = 0;
+  let rejectedRooms = 0;
+  let rejectedBatches = 0;
   let breakViolations = 0;
 
-  const localTeachers = new Map<string, Set<string>>();
-  const localRooms = new Map<string, Set<string>>();
-  const localGroups = new Map<StudentGroup, Set<string>>();
-  const occupied = (map: Map<string, Set<string>>, value: string, day: DayOfWeek, slot: number) =>
-    Boolean(map.get(normalized(value))?.has(`${day}__${slot}`));
-  const mark = (map: Map<string, Set<string>>, value: string, day: DayOfWeek, slot: number) => {
-    const key = normalized(value);
-    if (!map.has(key)) map.set(key, new Set());
-    map.get(key)!.add(`${day}__${slot}`);
-  };
-  const groupOccupied = (group: StudentGroup, day: DayOfWeek, slot: number) =>
-    GROUPS.some((other) => conflictsWith(group, other) && (
-      groupBusy.has(groupKeyFor(other, day, slot)) ||
-      Boolean(localGroups.get(other)?.has(`${day}__${slot}`))
-    ));
-  const markGroup = (group: StudentGroup, day: DayOfWeek, slot: number) => {
-    if (!localGroups.has(group)) localGroups.set(group, new Set());
-    localGroups.get(group)!.add(`${day}__${slot}`);
-  };
-
-  const lectureRooms = Array.from(new Set(subjects.flatMap((subject) => [
-    ...(subject.suitableRooms || []),
-    ...(roomNameFor(subject) ? [roomNameFor(subject)] : []),
-  ]).filter((room) => roomMatchesType(room, 'lecture'))));
-  const labRooms = Array.from(new Set(subjects.flatMap((subject) => [
-    ...(subject.suitableRooms || []),
-    ...(roomNameFor(subject) ? [roomNameFor(subject)] : []),
-  ]).filter((room) => roomMatchesType(room, 'lab'))));
-
-  const roomCandidates = (subject: Subject, day: DayOfWeek, slot: number) => {
+  const rooms = (subject: Subject) => {
     const type = roomTypeFor(subject);
-    const supplied = (subject.suitableRooms || []).filter((room) => roomMatchesType(room, type));
-    const assigned = roomNameFor(subject);
-    const pool = type === 'lab' ? labRooms : type === 'lecture' ? lectureRooms : [...new Set([...lectureRooms, ...labRooms])];
-    const previousSlot = teachingSlots[teachingSlots.indexOf(slot) - 1];
-    const previousRoom = previousSlot === undefined ? '' : grid[day][previousSlot]?.room || '';
-    const fallback = type === 'lab' ? '' : settings.defaultRoom || 'Room 101';
-    return [previousRoom, ...supplied, assigned, ...pool, fallback]
-      .filter((room, index, rooms) => room && rooms.indexOf(room) === index);
-  };
-
-  const blockCandidates = (duration: 1 | 2) => {
-    if (duration === 1) return teachingSlots.map((slot) => [slot]);
-    const blocks = teachingSlots
-      .slice(0, teachingSlots.length - duration + 1)
-      .map((_, index) => teachingSlots.slice(index, index + duration))
-      .filter((block) => block[block.length - 1] - block[0] === duration - 1);
-    return blocks.sort((left, right) => {
-      const leftPostBreak = left[0] >= 3 ? 0 : 1;
-      const rightPostBreak = right[0] >= 3 ? 0 : 1;
-      return leftPostBreak - rightPostBreak;
+    const compatible = Array.from(new Set(subjects.flatMap((candidate) => [
+      ...(candidate.suitableRooms || []),
+      candidate.classroomNumber
+        ? `${roomTypeFor(candidate) === 'lab' ? 'Lab' : 'Room'} ${candidate.classroomNumber}`
+        : '',
+    ]).filter(Boolean))).filter((room) => {
+      const lab = /^lab\s/i.test(room);
+      return type === 'any' || (type === 'lab' ? lab : !lab);
     });
+    const assigned = subject.classroomNumber
+      ? `${type === 'lab' ? 'Lab' : 'Room'} ${subject.classroomNumber}`
+      : '';
+    const fallback = type === 'lab' ? [] : [settings.defaultRoom || 'Room 101'];
+    return Array.from(new Set([
+      ...(subject.suitableRooms || []).filter((room) => type === 'any' || (type === 'lab' ? /^lab\s/i.test(room) : !/^lab\s/i.test(room))),
+      assigned,
+      ...compatible,
+      ...fallback,
+    ].filter(Boolean)));
   };
-
-  const activityGroups = new Map<string, ActivityGroup>();
-  subjects.forEach((subject) => {
-    const group = groupFor(subject);
-    const key = isBatchSubject(subject) ? `batch:${batchKeyFor(subject)}` : `whole:${subject.id}`;
-    const existing = activityGroups.get(key);
-    if (existing) {
-      existing.allocations.push({ subject, group });
-      existing.requestedPeriods = Math.max(existing.requestedPeriods, Math.max(0, subject.periodsPerWeek));
-      existing.durationPeriods = Math.max(existing.durationPeriods, durationFor(subject)) as 1 | 2;
-      existing.isLab = existing.isLab || isLabSubject(subject);
-    } else {
-      activityGroups.set(key, {
-        key,
-        name: subject.name,
-        allocations: [{ subject, group }],
-        requestedPeriods: Math.max(0, subject.periodsPerWeek),
-        durationPeriods: durationFor(subject),
-        isBatch: isBatchSubject(subject),
-        isLab: isLabSubject(subject),
-        isSequentialBatch: false,
-      });
-    }
-  });
-
-  activityGroups.forEach((activity) => {
-    const distinctGroups = new Set(activity.allocations.map((allocation) => allocation.group));
-    if (distinctGroups.size !== activity.allocations.length) {
-      warnings.push(`${activity.name}: duplicate student-group allocation detected; only one allocation per batch can be scheduled.`);
-      activity.allocations = activity.allocations.filter((allocation, index, allocations) =>
-        allocations.findIndex((candidate) => candidate.group === allocation.group) === index
+  const blocksFor = (duration: 1 | 2) => duration === 1
+    ? TEACHING_SLOTS.map((slot) => [slot])
+    : [[0, 1], [3, 4], [6, 7]];
+  const batchOccupied = (group: StudentGroup, day: DayOfWeek, slot: number) => {
+    if (group === 'Whole Division') {
+      return divisionBusy.has(`${divisionId}::${day}::${slot}`) || BATCHES.some((batch) =>
+        batchBusy.has(`${batchKey(divisionId, batch)}::${day}::${slot}`) ||
+        localBatchBusy.has(`${batchKey(divisionId, batch)}::${day}::${slot}`)
       );
     }
-    const requestedValues = new Set(activity.allocations.map((allocation) => allocation.subject.periodsPerWeek));
-    if (requestedValues.size > 1) {
-      warnings.push(`${activity.name}: batch period counts differ; using ${activity.requestedPeriods} shared periods.`);
-    }
-    const teachers = new Set(activity.allocations
-      .map((allocation) => normalized(allocation.subject.teacherName))
-      .filter((teacher) => teacher && teacher !== 'tbd'));
-    activity.isSequentialBatch = activity.isBatch && teachers.size === 1;
-  });
-
-  const orderedGroups = [...activityGroups.values()].sort((left, right) =>
-    Number(right.durationPeriods > 1) - Number(left.durationPeriods > 1) ||
-    Number(right.isBatch) - Number(left.isBatch) ||
-    right.requestedPeriods - left.requestedPeriods
-  );
-  const scheduledGroups = orderedGroups.flatMap((activity) => {
-    if (!activity.isSequentialBatch) return [activity];
-    return activity.allocations.map((allocation) => ({
-      ...activity,
-      key: `${activity.key}:${allocation.group}`,
-      logicalKey: activity.key,
-      allocations: [allocation],
-      requestedPeriods: Math.max(0, allocation.subject.periodsPerWeek),
-      isSequentialBatch: false,
-    }));
-  });
-  const placedPeriods = new Map<string, number>();
-  const logicalPlacedPeriods = new Map<string, number>();
-
-  const rotationCandidates = scheduledGroups.filter((activity) =>
-    Boolean(activity.logicalKey) && activity.isBatch
-  );
-  const rotationDurationOptions: (1 | 2)[] = [2, 1];
-
-  const conflictingDivision = (teacher: string, day: DayOfWeek, slot: number) => {
-    const conflict = teacherBusy.get(keyFor(teacher, day, slot));
-    return conflict ? conflict.teacher : 'Current timetable';
+    return divisionBusy.has(`${divisionId}::${day}::${slot}`) ||
+      batchBusy.has(`${batchKey(divisionId, group)}::${day}::${slot}`) ||
+      localBatchBusy.has(`${batchKey(divisionId, group)}::${day}::${slot}`) ||
+      localBatchBusy.has(`${batchKey(divisionId, 'Whole Division')}::${day}::${slot}`);
   };
 
-  const canPlace = (activity: ActivityGroup, day: DayOfWeek, block: number[]) => {
-    if (activity.durationPeriods === 2 && block[1] - block[0] !== 1) {
+  const createTasks = (): Task[] => {
+    const groups = new Map<string, Allocation[]>();
+    subjects.forEach((subject) => {
+      const group = groupFor(subject);
+      const mode = modeFor(subject);
+      let logical = group === 'Whole Division' ? `whole:${subject.id}` : `batch:${batchKeyFor(subject)}`;
+      if (mode !== 'WHOLE_DIVISION' && subject.activityGroupId) {
+        logical = `${mode.toLowerCase()}:${subject.activityGroupId}`;
+      }
+      if (!groups.has(logical)) groups.set(logical, []);
+      groups.get(logical)!.push({ subject, group });
+    });
+    const tasks: Task[] = [];
+    groups.forEach((allocations, logical) => {
+      const teacherNames = allocations
+        .map(({ subject }) => normalize(subject.teacherName))
+        .filter((teacher) => teacher && teacher !== 'tbd');
+      const hasTeacherCollision = new Set(teacherNames).size !== teacherNames.length;
+      const taskGroups = hasTeacherCollision && modeFor(allocations[0].subject) !== 'WHOLE_DIVISION'
+        ? allocations.map((allocation) => [allocation])
+        : [allocations];
+      taskGroups.forEach((taskAllocations, groupIndex) => {
+        const rounds = Math.max(...taskAllocations.map(({ subject }) =>
+          Math.ceil(Math.max(0, subject.periodsPerWeek) / durationFor(subject))));
+        for (let round = 0; round < rounds; round++) {
+          const active = taskAllocations.filter(({ subject }) =>
+            round * durationFor(subject) < Math.max(0, subject.periodsPerWeek));
+          if (!active.length) continue;
+          tasks.push({
+            key: `${logical}:${groupIndex}:${round}`,
+            allocations: active,
+            duration: Math.max(...active.map(({ subject }) => durationFor(subject))) as 1 | 2,
+            lab: active.some(({ subject }) => labFor(subject)),
+            requiredPeriods: Math.max(...active.map(({ subject }) => durationFor(subject))),
+          });
+        }
+      });
+    });
+    return tasks.sort((left, right) =>
+      Number(right.allocations.length > 1) - Number(left.allocations.length > 1) ||
+      Number(right.lab) - Number(left.lab) ||
+      right.allocations.length - left.allocations.length ||
+      left.key.localeCompare(right.key)
+    );
+  };
+
+  const tasks = createTasks();
+  const placedPeriods = new Map<string, number>();
+  const placedSubjectPeriods = new Map<string, number>();
+  const taskCandidates = (task: Task) => days.flatMap((day) => blocksFor(task.duration).map((block) => ({ day, block })))
+    .sort((left, right) =>
+      Number(right.block[0] >= 3) - Number(left.block[0] >= 3) ||
+      left.day.localeCompare(right.day) || left.block[0] - right.block[0]
+    );
+
+  const canPlace = (task: Task, day: DayOfWeek, block: number[]) => {
+    if (task.duration === 2 && (block.length !== 2 || block[1] - block[0] !== 1)) {
       breakViolations++;
       return null;
     }
-    const roomsByGroup = new Map<StudentGroup, string>();
-    const assignments: { allocation: Allocation; room: string; slot: number }[] = [];
+    const assignments: Assignment[] = [];
     for (const slot of block) {
-      const cell = grid[day][slot];
-      const cellActivities = cell?.activities || (cell?.subject ? [activityFor(cell.subject, cell.room || '')] : []);
-      const hasWholeActivity = cellActivities.some((existing) => existing.studentGroup === 'Whole Division');
+      if (grid[day][slot]?.isBreak) return null;
+      const usedTeachers = new Set<string>();
       const usedRooms = new Set<string>();
-      const teachersInSlot = new Set<string>();
-      for (const allocation of activity.allocations) {
-        if (hasWholeActivity || (allocation.group === 'Whole Division' && cell)) return null;
-        if (groupOccupied(allocation.group, day, slot)) {
-          groupConflictAttempts++;
+      for (const allocation of task.allocations) {
+        if (batchOccupied(allocation.group, day, slot)) {
+          rejectedBatches++;
           return null;
         }
-        const teacher = normalized(allocation.subject.teacherName);
-        if (teacher && teacher !== 'tbd' && (teachersInSlot.has(teacher) ||
-          teacherBusy.has(keyFor(allocation.subject.teacherName, day, slot)) ||
-          occupied(localTeachers, allocation.subject.teacherName, day, slot))) {
-          teacherConflictAttempts++;
-          clashes.push({
-            teacherName: allocation.subject.teacherName,
-            subjectName: activity.name,
-            conflictDay: day,
-            conflictPeriod: timeSlots[slot].periodNumber,
-            conflictingDivision: conflictingDivision(allocation.subject.teacherName, day, slot),
-            shiftedToDay: day,
-            shiftedToPeriod: 0,
-            resolutionNote: 'Teacher conflict prevented atomic activity placement.',
-          });
+        const teacher = normalize(allocation.subject.teacherName);
+        if (teacher && teacher !== 'tbd' && (
+          usedTeachers.has(teacher) ||
+          teacherBusy.has(key(allocation.subject.teacherName, day, slot)) ||
+          localTeacherBusy.has(key(allocation.subject.teacherName, day, slot))
+        )) {
+          rejectedTeachers++;
           return null;
         }
-        const previousRoom = roomsByGroup.get(allocation.group);
-        const room = (previousRoom ? [previousRoom, ...roomCandidates(allocation.subject, day, slot)] :
-          roomCandidates(allocation.subject, day, slot)).find((candidate) =>
-            !usedRooms.has(normalized(candidate)) &&
-            !roomBusy.has(keyFor(candidate, day, slot)) &&
-            !occupied(localRooms, candidate, day, slot)
-          );
+        const room = rooms(allocation.subject).find((candidate) => {
+          const roomId = normalize(candidate);
+          return !usedRooms.has(roomId) &&
+            !roomBusy.has(key(candidate, day, slot)) &&
+            !localRoomBusy.has(key(candidate, day, slot));
+        });
         if (!room) {
-          roomConflictAttempts++;
+          rejectedRooms++;
           return null;
         }
-        usedRooms.add(normalized(room));
-        roomsByGroup.set(allocation.group, room);
-        if (teacher && teacher !== 'tbd') teachersInSlot.add(teacher);
+        usedTeachers.add(teacher);
+        usedRooms.add(normalize(room));
         assignments.push({ allocation, room, slot });
       }
     }
     return assignments;
   };
 
-  const commit = (activity: ActivityGroup, day: DayOfWeek, block: number[], assignments: { allocation: Allocation; room: string; slot: number }[]) => {
-    const representative = activity.allocations[0].subject;
-    for (const slot of block) {
-      const cell = grid[day][slot];
-      const slotAssignments = assignments.filter((assignment) => assignment.slot === slot);
-      const firstRoom = slotAssignments[0]?.room || '';
-      if (activity.isBatch) {
-        const target = cell || {
-          id: `${day}-p${slot}`,
-          day,
-          periodIndex: slot,
-          timeSlot: timeSlots[slot],
-          isBreak: false,
-          activities: [],
-        };
+  const apply = (task: Task, day: DayOfWeek, block: number[], assignments: Assignment[]) => {
+    const previous = block.map((slot) => grid[day][slot]);
+    block.forEach((slot) => {
+      const slotAssignments = assignments.filter((entry) => entry.slot === slot);
+      const isBatch = task.allocations.some(({ group }) => group !== 'Whole Division');
+      const target = isBatch
+        ? grid[day][slot] || { id: `${day}-p${slot}`, day, periodIndex: slot, timeSlot: timeSlots[slot], isBreak: false, activities: [] }
+        : null;
+      if (target) {
         target.activities = [...(target.activities || []), ...slotAssignments.map(({ allocation, room }) => activityFor(allocation.subject, room))];
-        if (!target.subject) target.subject = representative;
-        target.room = firstRoom;
+        if (!target.subject) target.subject = task.allocations[0].subject;
+        target.room = slotAssignments[0]?.room || '';
         grid[day][slot] = target;
       } else {
         grid[day][slot] = {
@@ -375,196 +298,191 @@ export function generateNewTimetableGrid(
           day,
           periodIndex: slot,
           timeSlot: timeSlots[slot],
-          subject: representative,
-          room: firstRoom,
+          subject: task.allocations[0].subject,
+          room: slotAssignments[0]?.room || '',
           isBreak: false,
-          isLabSession: activity.isLab,
-          labBlockPart: activity.isLab ? (block.indexOf(slot) + 1) as 1 | 2 : undefined,
+          isLabSession: task.lab,
+          labBlockPart: task.lab ? (block.indexOf(slot) + 1) as 1 | 2 : undefined,
         };
       }
-      slotAssignments.forEach(({ allocation, room }) => {
-        if (allocation.subject.teacherName && normalized(allocation.subject.teacherName) !== 'tbd') mark(localTeachers, allocation.subject.teacherName, day, slot);
-        mark(localRooms, room, day, slot);
-        markGroup(allocation.group, day, slot);
+    });
+    assignments.forEach(({ allocation, room }) => {
+      if (allocation.subject.teacherName && normalize(allocation.subject.teacherName) !== 'tbd') {
+        block.forEach((slot) => localTeacherBusy.add(key(allocation.subject.teacherName, day, slot)));
+      }
+      block.forEach((slot) => {
+        localRoomBusy.add(key(room, day, slot));
+        localBatchBusy.add(`${batchKey(divisionId, allocation.group)}::${day}::${slot}`);
+        if (allocation.group === 'Whole Division') divisionBusy.add(`${divisionId}::${day}::${slot}`);
       });
-    }
-    placedPeriods.set(activity.key, (placedPeriods.get(activity.key) || 0) + block.length);
-    if (!activity.logicalKey) {
-      logicalPlacedPeriods.set(activity.key, placedPeriods.get(activity.key) || 0);
-    }
-    if (activity.isLab) {
-      labAllocations.push({
-        subjectId: representative.id,
-        subjectName: activity.name,
-        subjectCode: representative.code,
-        teacherName: representative.teacherName,
-        day,
-        periodNumber: timeSlots[block[0]].periodNumber,
-        periodNumbers: block.map((slot) => timeSlots[slot].periodNumber),
-        startTime: timeSlots[block[0]].startTime,
-        endTime: timeSlots[block[block.length - 1]].endTime,
-        room: assignments[0]?.room || '',
-        durationHours: block.length,
-        frequency: 'Weekly',
-      });
-    }
+      placedSubjectPeriods.set(allocation.subject.id, (placedSubjectPeriods.get(allocation.subject.id) || 0) + block.length);
+    });
+    placedPeriods.set(task.key, (placedPeriods.get(task.key) || 0) + task.duration);
+    return previous;
   };
 
-  // Coordinate different activities across TB1/TB2/TB3 before placing any
-  // remaining batch activity independently. This is the college rotation model.
-  rotationDurationOptions.forEach((duration) => {
-    let progress = true;
-    while (progress) {
-      progress = false;
-      const candidatesByBatch = GROUPS.slice(1).map((batch) =>
-        rotationCandidates.filter((activity) =>
-          activity.durationPeriods === duration &&
-          activity.allocations[0].group === batch &&
-          (placedPeriods.get(activity.key) || 0) + duration <= activity.requestedPeriods
-        )
-      );
-      if (candidatesByBatch.some((candidates) => candidates.length === 0)) break;
-
-      const combinations: ActivityGroup[][] = [];
-      const buildCombinations = (index: number, current: ActivityGroup[]) => {
-        if (index === candidatesByBatch.length) {
-          combinations.push([...current]);
-          return;
-        }
-        candidatesByBatch[index].forEach((candidate) => {
-          current.push(candidate);
-          buildCombinations(index + 1, current);
-          current.pop();
-        });
-      };
-      buildCombinations(0, []);
-
-      const rotationPlaced = combinations.some((combination) => {
-        const rotation: ActivityGroup = {
-          key: `rotation:${combination.map((activity) => activity.key).join('|')}`,
-          name: combination.map((activity) => activity.name).join(' / '),
-          allocations: combination.flatMap((activity) => activity.allocations),
-          requestedPeriods: duration,
-          durationPeriods: duration,
-          isBatch: true,
-          isLab: combination.some((activity) => activity.isLab),
-          isSequentialBatch: false,
-        };
-        return blockCandidates(duration).some((block) => days.some((day) => {
-          const assignments = canPlace(rotation, day, block);
-          if (!assignments) return false;
-          commit(rotation, day, block, assignments);
-          combination.forEach((activity) => {
-            placedPeriods.set(activity.key, (placedPeriods.get(activity.key) || 0) + duration);
-          });
-          return true;
-        }));
-      });
-      progress = rotationPlaced;
-    }
+  type SchedulerSnapshot = {
+    grid: Record<DayOfWeek, (TimetableCell | null)[]>;
+    teachers: Set<string>;
+    rooms: Set<string>;
+    batches: Set<string>;
+    divisions: Set<string>;
+    taskPeriods: Map<string, number>;
+    subjectPeriods: Map<string, number>;
+  };
+  const snapshot = (): SchedulerSnapshot => ({
+    grid: Object.fromEntries(days.map((day) => [day, grid[day].map((cell) => cell ? {
+      ...cell,
+      activities: cell.activities?.map((activity) => ({ ...activity, subject: { ...activity.subject } })),
+    } : null)])) as Record<DayOfWeek, (TimetableCell | null)[]>,
+    teachers: new Set(localTeacherBusy),
+    rooms: new Set(localRoomBusy),
+    batches: new Set(localBatchBusy),
+    divisions: new Set(divisionBusy),
+    taskPeriods: new Map(placedPeriods),
+    subjectPeriods: new Map(placedSubjectPeriods),
   });
+  const restore = (state: SchedulerSnapshot) => {
+    days.forEach((day) => { grid[day] = state.grid[day]; });
+    localTeacherBusy.clear();
+    state.teachers.forEach((value) => localTeacherBusy.add(value));
+    localRoomBusy.clear();
+    state.rooms.forEach((value) => localRoomBusy.add(value));
+    localBatchBusy.clear();
+    state.batches.forEach((value) => localBatchBusy.add(value));
+    divisionBusy.clear();
+    state.divisions.forEach((value) => divisionBusy.add(value));
+    placedPeriods.clear();
+    state.taskPeriods.forEach((value, taskKey) => placedPeriods.set(taskKey, value));
+    placedSubjectPeriods.clear();
+    state.subjectPeriods.forEach((value, subjectId) => placedSubjectPeriods.set(subjectId, value));
+  };
 
-  scheduledGroups.forEach((activity) => {
-    const blocks = blockCandidates(activity.durationPeriods);
-    while ((placedPeriods.get(activity.key) || 0) + activity.durationPeriods <= activity.requestedPeriods) {
-      const candidates = days.flatMap((day) => blocks.map((block) => ({
-        day,
-        block,
-        existingBatchActivities: block.reduce((count, slot) => count +
-          (grid[day][slot]?.activities?.filter((entry) => entry.studentGroup !== 'Whole Division').length || 0), 0),
-        dailyCount: activity.allocations.reduce((count, allocation) => count +
-          (grid[day].filter((cell) => cell?.subject?.id === allocation.subject.id || cell?.activities?.some((entry) => entry.subject.id === allocation.subject.id)).length), 0),
-        free: teachingSlots.filter((slot) => grid[day][slot] === null).length,
-      }))).sort((left, right) => right.existingBatchActivities - left.existingBatchActivities ||
-        left.dailyCount - right.dailyCount || right.free - left.free);
-      const candidate = candidates.find(({ day, block }) => {
-        const assignments = canPlace(activity, day, block);
-        if (!assignments) return false;
-        commit(activity, day, block, assignments);
-        return true;
-      });
-      if (!candidate) break;
+  const search = (index: number): number => {
+    if (index >= tasks.length) return 0;
+    const task = tasks[index];
+    const baseline = snapshot();
+    const remainingRequired = tasks
+      .slice(index)
+      .reduce((total, remainingTask) => total + remainingTask.requiredPeriods, 0);
+    let bestScore = 0;
+    let bestState = baseline;
+    for (const candidate of taskCandidates(task)) {
+      const assignments = canPlace(task, candidate.day, candidate.block);
+      if (!assignments) continue;
+      apply(task, candidate.day, candidate.block, assignments);
+      const score = task.duration + search(index + 1);
+      if (score > bestScore) {
+        bestScore = score;
+        bestState = snapshot();
+      }
+      restore(baseline);
+      if (bestScore >= remainingRequired) {
+        restore(bestState);
+        return bestScore;
+      }
     }
-  });
-
-  orderedGroups.forEach((activity) => {
-    const batchPlacements = scheduledGroups
-      .filter((scheduled) => scheduled.logicalKey === activity.key)
-      .map((scheduled) => placedPeriods.get(scheduled.key) || 0);
-    const placed = activity.isSequentialBatch
-      ? Math.min(...batchPlacements, activity.requestedPeriods)
-      : logicalPlacedPeriods.get(activity.key) || 0;
-    logicalPlacedPeriods.set(activity.key, placed);
-    if (placed < activity.requestedPeriods) {
-      const representative = activity.allocations[0].subject;
-      unplaced.push({
-        subjectId: representative.id,
-        subjectName: activity.name,
-        subjectCode: representative.code,
-        teacherName: representative.teacherName,
-        requestedPeriods: activity.requestedPeriods,
-        placedPeriods: placed,
-        reason: activity.isBatch
-          ? 'Parallel batch placement could not find one shared block with available teachers, groups, and distinct suitable rooms.'
-          : 'No valid teaching block satisfied the teacher, room, group, and break constraints.',
-      });
-      warnings.push(`${activity.name}: placed ${placed}/${activity.requestedPeriods} periods.`);
+    const skippedScore = search(index + 1);
+    if (skippedScore > bestScore) {
+      bestScore = skippedScore;
+      bestState = snapshot();
     }
+    restore(bestState);
+    return bestScore;
+  };
+  search(0);
+  subjects.forEach((subject) => {
+    const required = Math.max(0, subject.periodsPerWeek);
+    const allocated = placedSubjectPeriods.get(subject.id) || 0;
+    if (allocated >= required) return;
+    unplaced.push({
+      subjectId: subject.id,
+      subjectName: subject.name,
+      subjectCode: subject.code,
+      teacherName: subject.teacherName,
+      requestedPeriods: required,
+      placedPeriods: allocated,
+      reason: 'No valid deterministic block satisfied all teacher, room, batch, division, and break constraints.',
+    });
+    warnings.push(`${subject.name}: placed ${allocated}/${required} periods.`);
   });
 
   let filledSlots = 0;
-  let teacherConflicts = 0;
-  let roomConflicts = 0;
-  let batchConflicts = 0;
-  const seenTeachers = new Set<string>();
-  const seenRooms = new Set<string>();
-  const seenGroups = new Set<StudentGroup>();
-  days.forEach((day) => teachingSlots.forEach((slot) => {
+  let lecturePeriods = 0;
+  let labPeriods = 0;
+  days.forEach((day) => TEACHING_SLOTS.forEach((slot) => {
     const cell = grid[day][slot];
     if (!cell?.subject && !cell?.activities?.length) return;
     filledSlots++;
-    const activities = cell.activities?.length
-      ? cell.activities
-      : [activityFor(cell.subject!, cell.room || '')];
-    activities.forEach((activity) => {
-      const teacherKey = keyFor(activity.teacher, day, slot);
-      const roomKey = keyFor(activity.room, day, slot);
-      if (activity.teacher && seenTeachers.has(teacherKey)) teacherConflicts++;
-      if (activity.room && seenRooms.has(roomKey)) roomConflicts++;
-      if ([...seenGroups].some((group) => conflictsWith(group, activity.studentGroup))) batchConflicts++;
-      seenTeachers.add(teacherKey);
-      seenRooms.add(roomKey);
-      seenGroups.add(activity.studentGroup);
-    });
-    seenGroups.clear();
+    const activities = cell.activities?.length ? cell.activities : [activityFor(cell.subject!, cell.room || '')];
+    activities.forEach((activity) => { if (activity.isLab) labPeriods++; else lecturePeriods++; });
   }));
 
-  const totalRequestedPeriods = orderedGroups.reduce((sum, activity) => sum + activity.requestedPeriods, 0);
-  const placedTotal = orderedGroups.reduce((sum, activity) => sum + (logicalPlacedPeriods.get(activity.key) || 0), 0);
-  const freeSlots = totalWeeklySlots - filledSlots;
-  const subjectSummary = orderedGroups.map((activity) =>
-    activity.isSequentialBatch
-      ? `${activity.name}: ${scheduledGroups.filter((scheduled) => scheduled.logicalKey === activity.key &&
-        (placedPeriods.get(scheduled.key) || 0) >= scheduled.requestedPeriods).length}/${activity.allocations.length} batch allocations completed`
-      : `${activity.name}: ${logicalPlacedPeriods.get(activity.key) || 0}/${activity.requestedPeriods}`
-  ).join('; ');
-  const summary = `${subjectSummary}. Free slots: ${freeSlots}; Teacher conflicts: ${teacherConflicts}; Room conflicts: ${roomConflicts}; Batch conflicts: ${batchConflicts}; Break violations: ${breakViolations}.`;
-  warnings.push(`Validation summary: ${summary}`);
-  const success = unplaced.length === 0 && teacherConflicts === 0 && roomConflicts === 0 &&
-    batchConflicts === 0 && breakViolations === 0;
+  const totalRequestedPeriods = subjects.reduce((sum, subject) => sum + Math.max(0, subject.periodsPerWeek), 0);
+  const totalPlacedPeriods = lecturePeriods + labPeriods;
+  const freeSlots = days.length * TEACHING_SLOTS.length - filledSlots;
+  const labSeen = new Set<string>();
+  days.forEach((day) => TEACHING_SLOTS.forEach((slot) => {
+    const cell = grid[day][slot];
+    if (!cell) return;
+    const activities = cell.activities?.length ? cell.activities : cell.subject ? [activityFor(cell.subject, cell.room || '')] : [];
+    activities.forEach((activity) => {
+      if (!activity.isLab) return;
+      const identity = `${day}:${slot}:${activity.subject.id}:${activity.studentGroup}:${activity.room}`;
+      if (labSeen.has(identity)) return;
+      if (activity.durationPeriods === 2 && slot !== 0) {
+        const previous = grid[day][slot - 1];
+        const previousActivities = previous?.activities?.length
+          ? previous.activities
+          : previous?.subject ? [activityFor(previous.subject, previous.room || '')] : [];
+        const continues = previous && !previous.isBreak &&
+          previousActivities.some((entry) =>
+            entry.subject.id === activity.subject.id &&
+            entry.studentGroup === activity.studentGroup &&
+            entry.room === activity.room
+          );
+        if (continues) return;
+      }
+      const next = grid[day][slot + 1];
+      const nextActivities = next?.activities?.length
+        ? next.activities
+        : next?.subject ? [activityFor(next.subject, next.room || '')] : [];
+      const second = next && !next.isBreak && nextActivities.some((entry) =>
+        entry.subject.id === activity.subject.id &&
+        entry.studentGroup === activity.studentGroup &&
+        entry.room === activity.room
+      );
+      labAllocations.push({
+        subjectId: activity.subject.id,
+        subjectName: activity.subject.name,
+        subjectCode: activity.subject.code,
+        teacherName: activity.teacher,
+        day,
+        periodNumber: cell.timeSlot.periodNumber,
+        periodNumbers: second ? [cell.timeSlot.periodNumber, next!.timeSlot.periodNumber] : [cell.timeSlot.periodNumber],
+        startTime: cell.timeSlot.startTime,
+        endTime: second ? next!.timeSlot.endTime : cell.timeSlot.endTime,
+        room: activity.room,
+        durationHours: second ? 2 : 1,
+        frequency: 'Weekly',
+      });
+    });
+  }));
+
+  const summary = `Allocated ${totalPlacedPeriods}/${totalRequestedPeriods} periods; unallocated ${Math.max(0, totalRequestedPeriods - totalPlacedPeriods)}; free slots ${freeSlots}; rejected teacher ${rejectedTeachers}, room ${rejectedRooms}, batch ${rejectedBatches}, break ${breakViolations}.`;
+  warnings.push(summary);
   const generationReport: GenerationReport = {
     totalRequestedPeriods,
-    totalPlacedPeriods: placedTotal,
-    clashesAvoided: teacherConflictAttempts + roomConflictAttempts + groupConflictAttempts,
+    totalPlacedPeriods,
+    clashesAvoided: rejectedTeachers + rejectedRooms + rejectedBatches,
     clashDetails: clashes,
     unplacedSubjects: unplaced,
     labAllocations,
-    successMessage: success
-      ? `Timetable generated successfully. ${summary}`
-      : `Timetable generated with unsatisfied constraints. ${summary}`,
+    successMessage: unplaced.length
+      ? `Timetable generated with unsatisfied constraints. ${summary}`
+      : `Timetable generated successfully. ${summary}`,
     warningMessages: warnings,
   };
-
   return {
     timetableKey,
     department,
@@ -578,7 +496,7 @@ export function generateNewTimetableGrid(
       weekday: 'long', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
     }),
     totalPeriodsAllocated: filledSlots,
-    stats: { totalWeeklySlots, filledSlots, freeSlots },
+    stats: { totalWeeklySlots: days.length * TEACHING_SLOTS.length, filledSlots, freeSlots },
     generationReport,
   };
 }

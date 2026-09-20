@@ -53,6 +53,7 @@ export interface Subject {
   /** Optional metadata for richer activities; omitted values keep current behavior. */
   activityType?: ActivityType;
   activityMode?: TimetableActivityType;
+  activityGroupId?: string;
   studentGroup?: StudentGroup;
   durationPeriods?: 1 | 2;
   isLab?: boolean;
@@ -87,6 +88,7 @@ export interface TimetableActivity {
   durationPeriods: 1 | 2;
   activityType: ActivityType;
   activityMode?: TimetableActivityType;
+  activityGroupId?: string;
   isLab?: boolean;
 }
 
