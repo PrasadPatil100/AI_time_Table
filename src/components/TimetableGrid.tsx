@@ -11,6 +11,13 @@ import {
 } from 'lucide-react';
 import { normalizeCellActivities } from '../utils/timetableActivities';
 
+const activityModeLabel = (mode?: string) => {
+  if (mode === 'WHOLE_DIVISION') return 'Whole division';
+  if (mode === 'PARALLEL_BATCH') return 'Parallel batch';
+  if (mode === 'ROTATIONAL_BATCH') return 'Rotational batch';
+  return mode;
+};
+
 interface TimetableGridProps {
   timetable: GeneratedTimetable;
   highlightSubjectId: string | null;
@@ -168,7 +175,11 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({
                       (highlightSubjectId && !isMatchedSubject) ||
                       (highlightTeacher && !isMatchedTeacher);
 
-                    const isLab = cell?.isLabSession || activities.some((activity) => activity.isLab);
+                            const isLab = cell?.isLabSession || activities.some((activity) => activity.isLab);
+                            const longestDuration = activities.reduce(
+                              (duration, activity) => Math.max(duration, activity.durationPeriods || 1),
+                              1
+                            );
 
                     return (
                       <td
@@ -208,7 +219,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({
                                       title="2-Hour Continuous Practical Lab Block"
                                     >
                                       <FlaskConical className="w-2.5 h-2.5 text-purple-700" />
-                                      <span>2 Hours</span>
+                                      <span>{longestDuration} Period{longestDuration === 1 ? '' : 's'}</span>
                                     </span>
                                   ) : (
                                     <span
@@ -241,13 +252,9 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({
                                         {activity.studentGroup}
                                       </span>
                                       <span className="truncate">
-                                        {activity.activityMode || activity.activityType} • {activity.teacher || 'Teacher TBD'}
+                                        {activityModeLabel(activity.activityMode) || activity.activityType} • {activity.teacher || 'Teacher TBD'}
                                       </span>
-                                      {activity.isLab && (
-                                        <span className="font-semibold shrink-0">
-                                          {activity.durationPeriods} periods
-                                        </span>
-                                      )}
+                                      {activity.isLab && <span className="font-semibold shrink-0">{activity.durationPeriods} periods</span>}
                                     </div>
                                   </div>
                                 ))}

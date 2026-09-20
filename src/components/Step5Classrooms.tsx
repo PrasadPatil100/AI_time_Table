@@ -1,24 +1,18 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { AcademicYear, Department, Division, Subject } from '../types';
 import {
+  AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
+  BookOpen,
+  CheckCircle2,
   DoorClosed,
   FlaskConical,
-  BookOpen,
   GraduationCap,
-  Sparkles,
-  CheckCircle2,
-  AlertTriangle,
-  ArrowRight,
-  ArrowLeft,
-  LayoutGrid,
-  Hash,
   Info,
-  Check,
-  Building,
-  RotateCcw,
-  SlidersHorizontal,
-  Plus,
   Minus,
+  Plus,
+  Sparkles,
 } from 'lucide-react';
 
 interface Step5ClassroomsProps {
@@ -31,6 +25,18 @@ interface Step5ClassroomsProps {
   onNext: () => void;
 }
 
+type AllocationKind = 'theory' | 'lab';
+
+const isLabSubject = (subject: Subject) => subject.isLab || subject.roomType === 'lab';
+
+const activityLabel = (subject: Subject) => subject.activityType || (isLabSubject(subject) ? 'Lab' : 'Theory');
+
+const groupLabel = (subject: Subject) => {
+  if (subject.studentGroup && subject.studentGroup !== 'Whole Division') return subject.studentGroup;
+  if (subject.activityMode === 'PARALLEL_BATCH' || subject.activityMode === 'ROTATIONAL_BATCH') return 'Batch activity';
+  return 'Whole division';
+};
+
 export const Step5Classrooms: React.FC<Step5ClassroomsProps> = ({
   department,
   year,
@@ -40,576 +46,159 @@ export const Step5Classrooms: React.FC<Step5ClassroomsProps> = ({
   onBack,
   onNext,
 }) => {
-  const [filterType, setFilterType] = useState<'all' | 'lecture' | 'lab'>('all');
-  const [activePickerSubjectId, setActivePickerSubjectId] = useState<string | null>(null);
-  const [pickerFloor, setPickerFloor] = useState<number>(1); // 1: 1-25, 2: 26-50, 3: 51-75, 4: 76-100
+  const [activeKind, setActiveKind] = useState<AllocationKind>('theory');
 
-  // Update room number for a subject (enforcing 1 to 100)
-  const handleRoomNumberChange = (subjectId: string, rawVal: number | string) => {
-    let num = typeof rawVal === 'string' ? parseInt(rawVal, 10) : rawVal;
-    if (isNaN(num)) num = 1;
-    if (num < 1) num = 1;
-    if (num > 100) num = 100;
+  const theorySubjects = subjects.filter((subject) => !isLabSubject(subject));
+  const labSubjects = subjects.filter(isLabSubject);
+  const visibleSubjects = activeKind === 'lab' ? labSubjects : theorySubjects;
 
-    const updated = subjects.map((subj) => {
-      if (subj.id === subjectId) {
-        return {
-          ...subj,
-          classroomNumber: num,
-        };
-      }
-      return subj;
+  const roomConflicts = useMemo(() => {
+    const conflicts: { kind: AllocationKind; room: number; subjects: Subject[] }[] = [];
+    (['theory', 'lab'] as AllocationKind[]).forEach((kind) => {
+      const byRoom = new Map<number, Subject[]>();
+      subjects
+        .filter((subject) => (kind === 'lab' ? isLabSubject(subject) : !isLabSubject(subject)))
+        .forEach((subject) => {
+          if (!subject.classroomNumber) return;
+          const occupants = byRoom.get(subject.classroomNumber) || [];
+          byRoom.set(subject.classroomNumber, [...occupants, subject]);
+        });
+      byRoom.forEach((occupants, room) => {
+        if (occupants.length > 1) conflicts.push({ kind, room, subjects: occupants });
+      });
     });
-    onChangeSubjects(updated);
+    return conflicts;
+  }, [subjects]);
+
+  const missingTheory = theorySubjects.filter((subject) => !subject.classroomNumber);
+  const missingLabs = labSubjects.filter((subject) => !subject.classroomNumber);
+  const assignedCount = subjects.length - missingTheory.length - missingLabs.length;
+
+  const updateRoom = (subjectId: string, value: number | string) => {
+    const rawValue = String(value).trim();
+    const room = rawValue === '' ? undefined : Number(rawValue);
+    if (room !== undefined && (!Number.isInteger(room) || room < 1 || room > 100)) return;
+    onChangeSubjects(subjects.map((subject) => subject.id === subjectId ? { ...subject, classroomNumber: room } : subject));
   };
 
-  // Toggle or change room type (lecture vs lab)
-  const handleRoomTypeChange = (subjectId: string, roomType: 'lecture' | 'lab') => {
-    const updated = subjects.map((subj) => {
-      if (subj.id === subjectId) {
-        return {
-          ...subj,
-          roomType,
-          isLab: roomType === 'lab',
-        };
-      }
-      return subj;
-    });
-    onChangeSubjects(updated);
+  const updateRoomType = (subjectId: string, kind: AllocationKind) => {
+    onChangeSubjects(subjects.map((subject) => subject.id === subjectId
+      ? { ...subject, isLab: kind === 'lab', roomType: kind === 'lab' ? 'lab' : 'lecture' }
+      : subject));
   };
 
-  // Auto-assign unique non-conflicting rooms 1 to 100
-  const handleAutoAssignUniqueRooms = () => {
-    let nextLectureRoom = 10;
+  const autoAssign = () => {
+    let nextTheoryRoom = 1;
     let nextLabRoom = 1;
+    const usedTheory = new Set<number>();
+    const usedLabs = new Set<number>();
+    const nextRoom = (used: Set<number>, start: number) => {
+      let room = start;
+      while (used.has(room) && room <= 100) room += 1;
+      if (room > 100) return undefined;
+      used.add(room);
+      return room;
+    };
 
-    const updated = subjects.map((subj, idx) => {
-      const isLab = subj.isLab || subj.roomType === 'lab';
-      let roomNum: number;
-      if (isLab) {
-        roomNum = (nextLabRoom <= 100) ? nextLabRoom : ((idx * 3 + 1) % 100 || 1);
-        nextLabRoom += 2;
-      } else {
-        roomNum = (nextLectureRoom <= 100) ? nextLectureRoom : ((idx * 4 + 10) % 100 || 1);
-        nextLectureRoom += 3;
-      }
-      return {
-        ...subj,
-        classroomNumber: roomNum,
-        roomType: (isLab ? 'lab' : 'lecture') as 'lab' | 'lecture',
-      };
-    });
-
-    onChangeSubjects(updated);
+    onChangeSubjects(subjects.map((subject) => {
+      const lab = isLabSubject(subject);
+      const room = lab ? nextRoom(usedLabs, nextLabRoom) : nextRoom(usedTheory, nextTheoryRoom);
+      if (lab && room !== undefined) nextLabRoom = room + 1;
+      if (!lab && room !== undefined) nextTheoryRoom = room + 1;
+      return { ...subject, classroomNumber: room, isLab: lab, roomType: lab ? 'lab' : 'lecture' };
+    }));
   };
 
-  // Check for duplicates/shared rooms
-  const roomUsageMap: Record<number, Subject[]> = {};
-  subjects.forEach((s) => {
-    const r = s.classroomNumber || 1;
-    if (!roomUsageMap[r]) roomUsageMap[r] = [];
-    roomUsageMap[r].push(s);
-  });
+  const handleNext = () => {
+    if (missingTheory.length || missingLabs.length) {
+      setActiveKind(missingLabs.length ? 'lab' : 'theory');
+      return;
+    }
+    onNext();
+  };
 
-  const duplicateRooms = Object.entries(roomUsageMap)
-    .filter(([_, list]) => list.length > 1)
-    .map(([room, list]) => ({ room: Number(room), list }));
+  const renderSubject = (subject: Subject) => {
+    const lab = isLabSubject(subject);
+    const room = subject.classroomNumber;
+    const conflict = roomConflicts.find((item) => item.kind === (lab ? 'lab' : 'theory') && item.room === room);
 
-  const totalAssigned = subjects.filter(
-    (s) => s.classroomNumber && s.classroomNumber >= 1 && s.classroomNumber <= 100
-  ).length;
-  const lectureCount = subjects.filter((s) => !s.isLab && s.roomType !== 'lab').length;
-  const labCount = subjects.filter((s) => s.isLab || s.roomType === 'lab').length;
+    return (
+      <article key={subject.id} className={`rounded-2xl border bg-white p-4 shadow-xs ${lab ? 'border-emerald-200/80' : 'border-slate-200/80'}`}>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex min-w-0 items-start gap-3">
+            <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border ${lab ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-indigo-200 bg-indigo-50 text-indigo-700'}`}>
+              {lab ? <FlaskConical className="h-5 w-5" /> : <BookOpen className="h-5 w-5" />}
+            </div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="rounded border border-slate-200 bg-slate-100 px-2 py-0.5 font-mono text-xs font-bold text-slate-600">{subject.code}</span>
+                <h3 className="text-base font-bold text-slate-900">{subject.name}</h3>
+                <span className={`rounded-full px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide ${lab ? 'bg-emerald-100 text-emerald-800' : 'bg-indigo-100 text-indigo-800'}`}>{lab ? 'LAB REQUIRED' : 'THEORY'}</span>
+              </div>
+              <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-600">
+                <span>Activity: <strong className="text-slate-800">{activityLabel(subject)}</strong></span>
+                <span>Group: <strong className="text-slate-800">{groupLabel(subject)}</strong></span>
+                <span>Teacher: <strong className="text-slate-800">{subject.teacherName}</strong></span>
+                <span>{subject.periodsPerWeek} periods/week</span>
+              </div>
+            </div>
+          </div>
 
-  const filteredSubjects = subjects.filter((s) => {
-    const isLab = s.isLab || s.roomType === 'lab';
-    if (filterType === 'lecture') return !isLab;
-    if (filterType === 'lab') return isLab;
-    return true;
-  });
-
-  // Active subject for modal picker
-  const activeSubject = subjects.find((s) => s.id === activePickerSubjectId);
-
-  // Helper floor ranges
-  const floorRanges = [
-    { floor: 1, label: 'Floor 1 (Rooms 1–25)', start: 1, end: 25 },
-    { floor: 2, label: 'Floor 2 (Rooms 26–50)', start: 26, end: 50 },
-    { floor: 3, label: 'Floor 3 (Rooms 51–75)', start: 51, end: 75 },
-    { floor: 4, label: 'Floor 4 & Labs (Rooms 76–100)', start: 76, end: 100 },
-  ];
+          <div className="flex shrink-0 flex-col gap-2 sm:flex-row sm:items-center">
+            <div className="flex items-center rounded-xl border border-slate-300 bg-white shadow-xs focus-within:ring-2 focus-within:ring-indigo-500">
+              <span className="border-r border-slate-200 bg-slate-50 px-2.5 py-2 text-xs font-bold text-slate-600">{lab ? 'Lab #' : 'Room #'}</span>
+              <button type="button" onClick={() => updateRoom(subject.id, Math.max(1, (room || 1) - 1))} disabled={!room || room <= 1} className="p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-30" title="Previous room number"><Minus className="h-3.5 w-3.5" /></button>
+              <input type="number" min={1} max={100} value={room ?? ''} onChange={(event) => updateRoom(subject.id, event.target.value)} placeholder="-" aria-label={`${lab ? 'Lab' : 'Classroom'} number for ${subject.name}`} className="w-14 py-2 text-center text-sm font-bold text-slate-900 focus:outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none" />
+              <button type="button" onClick={() => updateRoom(subject.id, Math.min(100, (room || 0) + 1))} disabled={room === 100} className="p-2 text-slate-500 hover:bg-slate-100 disabled:opacity-30" title="Next room number"><Plus className="h-3.5 w-3.5" /></button>
+            </div>
+            <select value={lab ? 'lab' : 'theory'} onChange={(event) => updateRoomType(subject.id, event.target.value as AllocationKind)} aria-label={`Activity room type for ${subject.name}`} className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-700">
+              <option value="theory">Theory classroom</option>
+              <option value="lab">Laboratory</option>
+            </select>
+          </div>
+        </div>
+        {!room && <p className="mt-3 flex items-center gap-1.5 text-xs font-semibold text-amber-700"><AlertTriangle className="h-3.5 w-3.5" />{lab ? 'A lab classroom number is required.' : 'A classroom number is required.'}</p>}
+        {conflict && <p className="mt-3 flex items-center gap-1.5 text-xs font-semibold text-amber-700"><AlertTriangle className="h-3.5 w-3.5" />{lab ? 'Lab' : 'Room'} {room} is also assigned to {conflict.subjects.filter((other) => other.id !== subject.id).map((other) => other.code).join(', ')}. This may conflict if scheduled at the same time.</p>}
+      </article>
+    );
+  };
 
   return (
-    <div className="space-y-6 max-w-5xl mx-auto py-2">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-slate-200/80 pb-6">
+    <div className="mx-auto max-w-5xl space-y-6 py-2">
+      <div className="flex flex-col justify-between gap-4 border-b border-slate-200/80 pb-6 md:flex-row md:items-end">
         <div>
-          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-blue-50 text-blue-700 text-xs font-semibold mb-2 border border-blue-200/60">
-            <span>Step 5 of 6</span>
-            <span>•</span>
-            <span className="flex items-center gap-1 font-bold">
-              <GraduationCap className="w-3.5 h-3.5" />
-              Year {year}
-            </span>
-            <span>•</span>
-            <span className="flex items-center gap-1 font-bold">
-              <DoorClosed className="w-3.5 h-3.5" />
-              Classrooms 1–100
-            </span>
-          </div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">
-            Classroom & Lab Allocation
-          </h2>
-          <p className="text-sm text-slate-500 mt-1 max-w-2xl">
-            Assign designated classrooms for each lecture as well as lab hall for{' '}
-            <strong className="text-slate-800">{department.name}</strong> •{' '}
-            <strong className="text-indigo-700">Year {year}</strong> •{' '}
-            <strong className="text-slate-800">Division {division.name}</strong>.
-            Classroom numbering starts from <strong className="text-blue-700">1 to 100</strong>.
-          </p>
+          <div className="mb-2 inline-flex items-center gap-2 rounded-full border border-blue-200/60 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700"><span>Step 5 of 6</span><span>•</span><GraduationCap className="h-3.5 w-3.5" /><span>Year {year}</span><span>•</span><DoorClosed className="h-3.5 w-3.5" /><span>{department.code} / Division {division.name}</span></div>
+          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Classroom Configuration</h2>
+          <p className="mt-1 max-w-2xl text-sm text-slate-500">Assign a classroom to every theory activity and a laboratory number to every lab activity. Room numbers can be reused when the timetable places activities at different times.</p>
         </div>
-
-        {/* Auto-assign & Reset actions */}
-        <div className="flex items-center gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={handleAutoAssignUniqueRooms}
-            id="auto-assign-rooms-btn"
-            className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-700 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100/80 border border-indigo-200/80 px-3.5 py-2 rounded-xl transition shadow-xs cursor-pointer"
-            title="Automatically assign unique distinct room numbers 1 to 100"
-          >
-            <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
-            <span>Smart Auto-Assign (1–100)</span>
-          </button>
-        </div>
+        <button type="button" onClick={autoAssign} className="inline-flex shrink-0 items-center justify-center gap-1.5 rounded-xl border border-indigo-200/80 bg-indigo-50 px-3.5 py-2 text-xs font-semibold text-indigo-700 shadow-xs transition hover:bg-indigo-100"><Sparkles className="h-3.5 w-3.5" /> Auto-assign rooms</button>
       </div>
 
-      {/* Summary KPI Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-xs flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-blue-50 border border-blue-200/60 flex items-center justify-center text-blue-600 shrink-0">
-            <DoorClosed className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="text-xs text-slate-500 font-medium">Classroom Range</div>
-            <div className="text-base font-bold text-slate-900">1 to 100</div>
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-xs flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-indigo-50 border border-indigo-200/60 flex items-center justify-center text-indigo-600 shrink-0">
-            <BookOpen className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="text-xs text-slate-500 font-medium">Lecture Classes</div>
-            <div className="text-base font-bold text-slate-900">{lectureCount} Lectures</div>
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-xs flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-emerald-50 border border-emerald-200/60 flex items-center justify-center text-emerald-600 shrink-0">
-            <FlaskConical className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="text-xs text-slate-500 font-medium">Lab Sessions</div>
-            <div className="text-base font-bold text-slate-900">{labCount} Labs</div>
-          </div>
-        </div>
-
-        <div className="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-xs flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-amber-50 border border-amber-200/60 flex items-center justify-center text-amber-600 shrink-0">
-            <CheckCircle2 className="w-5 h-5" />
-          </div>
-          <div>
-            <div className="text-xs text-slate-500 font-medium">Allocation Status</div>
-            <div className="text-base font-bold text-emerald-700">
-              {totalAssigned}/{subjects.length} Ready
-            </div>
-          </div>
-        </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="rounded-xl border border-slate-200/80 bg-white p-3.5 shadow-xs"><div className="text-xs text-slate-500">Theory activities</div><div className="text-lg font-bold text-indigo-700">{theorySubjects.length}</div></div>
+        <div className="rounded-xl border border-slate-200/80 bg-white p-3.5 shadow-xs"><div className="text-xs text-slate-500">Laboratories</div><div className="text-lg font-bold text-emerald-700">{labSubjects.length}</div></div>
+        <div className="rounded-xl border border-slate-200/80 bg-white p-3.5 shadow-xs"><div className="text-xs text-slate-500">Assigned</div><div className="text-lg font-bold text-slate-900">{assignedCount}/{subjects.length}</div></div>
+        <div className="rounded-xl border border-slate-200/80 bg-white p-3.5 shadow-xs"><div className="text-xs text-slate-500">Warnings</div><div className={`text-lg font-bold ${missingTheory.length || missingLabs.length || roomConflicts.length ? 'text-amber-700' : 'text-emerald-700'}`}>{missingTheory.length + missingLabs.length + roomConflicts.length}</div></div>
       </div>
 
-      {/* Duplicate Room Alert if applicable */}
-      {duplicateRooms.length > 0 && (
-        <div className="p-3.5 bg-amber-50/90 border border-amber-200/80 rounded-xl flex items-start gap-3 text-xs text-amber-900 shadow-xs">
-          <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <div className="font-semibold text-amber-950">
-              Shared Classroom Notice (Rooms 1–100)
-            </div>
-            <p className="mt-0.5 text-amber-800">
-              {duplicateRooms.map((d) => `Room ${d.room} is shared by ${d.list.map((s) => s.name).join(' & ')}`).join('; ')}.
-              Classes scheduled at different times can share rooms, or you can click{' '}
-              <button
-                type="button"
-                onClick={handleAutoAssignUniqueRooms}
-                className="underline font-bold text-indigo-700 hover:text-indigo-900 cursor-pointer"
-              >
-                Smart Auto-Assign (1–100)
-              </button>{' '}
-              to assign unique rooms for every course.
-            </p>
-          </div>
-        </div>
-      )}
+      {(missingTheory.length || missingLabs.length) > 0 && <div className="flex items-start gap-3 rounded-xl border border-amber-200/80 bg-amber-50 p-3.5 text-xs text-amber-900"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" /><div><strong>Assignments needed before continuing.</strong> Every subject must have a room number. Lab subjects require a lab assignment.</div></div>}
+      {roomConflicts.length > 0 && <div className="flex items-start gap-3 rounded-xl border border-amber-200/80 bg-amber-50 p-3.5 text-xs text-amber-900"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" /><div><strong>Potential room conflicts:</strong> {roomConflicts.map((item) => `${item.kind === 'lab' ? 'Lab' : 'Room'} ${item.room}`).join(', ')} are assigned more than once. This is allowed for activities at different times.</div></div>}
 
-      {/* Filter Tabs */}
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="flex items-center gap-1.5 p-1 bg-slate-100 rounded-xl border border-slate-200/80">
-          <button
-            type="button"
-            onClick={() => setFilterType('all')}
-            className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition ${
-              filterType === 'all'
-                ? 'bg-white text-slate-900 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            All Courses ({subjects.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setFilterType('lecture')}
-            className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition inline-flex items-center gap-1 ${
-              filterType === 'lecture'
-                ? 'bg-white text-indigo-700 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <BookOpen className="w-3.5 h-3.5" />
-            Lectures ({lectureCount})
-          </button>
-          <button
-            type="button"
-            onClick={() => setFilterType('lab')}
-            className={`text-xs font-semibold px-3 py-1.5 rounded-lg transition inline-flex items-center gap-1 ${
-              filterType === 'lab'
-                ? 'bg-white text-emerald-700 shadow-xs'
-                : 'text-slate-600 hover:text-slate-900'
-            }`}
-          >
-            <FlaskConical className="w-3.5 h-3.5" />
-            Labs ({labCount})
-          </button>
-        </div>
-
-        <div className="text-xs text-slate-500 font-medium">
-          Numbering: <span className="font-bold text-slate-800">1 to 100</span> (Ground to 4th Floor & Wing Labs)
-        </div>
+      <div className="flex gap-1.5 rounded-xl border border-slate-200/80 bg-slate-100 p-1">
+        <button type="button" onClick={() => setActiveKind('theory')} className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold ${activeKind === 'theory' ? 'bg-white text-indigo-700 shadow-xs' : 'text-slate-600'}`}><BookOpen className="h-4 w-4" /> Theory / Classrooms ({theorySubjects.length})</button>
+        <button type="button" onClick={() => setActiveKind('lab')} className={`flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold ${activeKind === 'lab' ? 'bg-white text-emerald-700 shadow-xs' : 'text-slate-600'}`}><FlaskConical className="h-4 w-4" /> Laboratories ({labSubjects.length})</button>
       </div>
 
-      {/* Classroom Allocation Cards List */}
-      <div className="space-y-3">
-        {filteredSubjects.map((subj, index) => {
-          const isLab = subj.isLab || subj.roomType === 'lab';
-          const roomNum = subj.classroomNumber || 1;
-          const otherInSameRoom = roomUsageMap[roomNum]?.filter((s) => s.id !== subj.id) || [];
+      <section className="space-y-3">
+        <div className="flex items-center justify-between"><h3 className="text-lg font-bold text-slate-900">{activeKind === 'lab' ? 'Laboratories' : 'Theory / Classrooms'}</h3><span className="text-xs text-slate-500">Numbers 1-100</span></div>
+        {visibleSubjects.length ? visibleSubjects.map(renderSubject) : <div className="rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-8 text-center text-sm text-slate-500">No {activeKind === 'lab' ? 'laboratory' : 'theory'} subjects configured.</div>}
+      </section>
 
-          return (
-            <div
-              key={subj.id}
-              className={`bg-white border rounded-2xl p-4 sm:p-5 transition-all shadow-xs ${
-                isLab
-                  ? 'border-emerald-200/80 hover:border-emerald-300'
-                  : 'border-slate-200/80 hover:border-indigo-200'
-              }`}
-            >
-              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-                {/* Left: Subject Info */}
-                <div className="flex items-start gap-3.5 min-w-0 flex-1">
-                  <div
-                    className={`w-11 h-11 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 border ${
-                      isLab
-                        ? 'bg-emerald-50 border-emerald-200/80 text-emerald-700'
-                        : 'bg-indigo-50 border-indigo-200/80 text-indigo-700'
-                    }`}
-                  >
-                    {isLab ? (
-                      <FlaskConical className="w-5 h-5" />
-                    ) : (
-                      <DoorClosed className="w-5 h-5" />
-                    )}
-                  </div>
+      <div className="flex items-start gap-3 rounded-2xl border border-slate-200/80 bg-slate-100/90 p-4 text-xs text-slate-600"><Info className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" /><p>Subject name, code, activity type, batch or division group, teacher, and the preserved classroom assignment are shown together. Auto-assign uses distinct numbers within theory and laboratory rooms and does not alter workload or activity metadata.</p></div>
 
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="font-mono text-xs font-bold text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200/70">
-                        {subj.code}
-                      </span>
-                      <h3 className="font-bold text-slate-900 text-base leading-snug">
-                        {subj.name}
-                      </h3>
-                      <span
-                        className={`text-[11px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
-                          isLab
-                            ? 'bg-emerald-100 text-emerald-800'
-                            : 'bg-indigo-100 text-indigo-800'
-                        }`}
-                      >
-                        {isLab ? 'Lab Session' : 'Lecture / Theory'}
-                      </span>
-                    </div>
-
-                    <div className="flex items-center gap-3 text-xs text-slate-500 mt-1.5 flex-wrap">
-                      <span>Faculty: <strong className="text-slate-700 font-semibold">{subj.teacherName}</strong></span>
-                      <span>•</span>
-                      <span>{subj.periodsPerWeek} Periods / Week</span>
-                      {otherInSameRoom.length > 0 && (
-                        <>
-                          <span>•</span>
-                          <span className="text-amber-700 font-medium">
-                            Shares room with {otherInSameRoom[0].code}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Right: Controls for Type (Lecture vs Lab) and Room Number (1 to 100) */}
-                <div className="flex flex-col sm:flex-row sm:items-center gap-3 shrink-0 pt-3 sm:pt-0 border-t sm:border-t-0 border-slate-100">
-                  {/* Lecture / Lab Type Switcher */}
-                  <div className="flex items-center p-1 bg-slate-100 rounded-xl border border-slate-200/80 shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => handleRoomTypeChange(subj.id, 'lecture')}
-                      className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg transition flex items-center gap-1 ${
-                        !isLab
-                          ? 'bg-white text-indigo-700 shadow-xs font-bold'
-                          : 'text-slate-500 hover:text-slate-800'
-                      }`}
-                    >
-                      <BookOpen className="w-3 h-3" />
-                      <span>Lecture</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleRoomTypeChange(subj.id, 'lab')}
-                      className={`text-xs font-semibold px-2.5 py-1.5 rounded-lg transition flex items-center gap-1 ${
-                        isLab
-                          ? 'bg-white text-emerald-700 shadow-xs font-bold'
-                          : 'text-slate-500 hover:text-slate-800'
-                      }`}
-                    >
-                      <FlaskConical className="w-3 h-3" />
-                      <span>Lab</span>
-                    </button>
-                  </div>
-
-                  {/* Room Number Stepper & Direct Input (1 to 100) */}
-                  <div className="flex items-center gap-2">
-                    <div className="flex items-center border border-slate-300 rounded-xl overflow-hidden bg-white shadow-xs focus-within:ring-2 focus-within:ring-indigo-500 focus-within:border-indigo-500">
-                      <span className="px-2.5 py-2 text-xs font-bold text-slate-500 bg-slate-50 border-r border-slate-200 select-none">
-                        {isLab ? 'Lab #' : 'Room #'}
-                      </span>
-
-                      {/* Decrement Button */}
-                      <button
-                        type="button"
-                        onClick={() => handleRoomNumberChange(subj.id, Math.max(1, roomNum - 1))}
-                        disabled={roomNum <= 1}
-                        className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent transition"
-                        title="Previous room number"
-                      >
-                        <Minus className="w-3.5 h-3.5" />
-                      </button>
-
-                      {/* Number Input (1 to 100) */}
-                      <input
-                        type="number"
-                        min={1}
-                        max={100}
-                        value={roomNum}
-                        onChange={(e) => handleRoomNumberChange(subj.id, e.target.value)}
-                        className="w-14 py-2 text-center text-sm font-bold text-slate-900 focus:outline-none [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                        aria-label={`Classroom number for ${subj.name}`}
-                      />
-
-                      {/* Increment Button */}
-                      <button
-                        type="button"
-                        onClick={() => handleRoomNumberChange(subj.id, Math.min(100, roomNum + 1))}
-                        disabled={roomNum >= 100}
-                        className="p-2 text-slate-500 hover:text-slate-900 hover:bg-slate-100 disabled:opacity-30 disabled:hover:bg-transparent transition"
-                        title="Next room number"
-                      >
-                        <Plus className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-
-                    {/* Quick Visual 1-100 Grid Picker Trigger */}
-                    <button
-                      type="button"
-                      onClick={() => setActivePickerSubjectId(subj.id)}
-                      className="p-2.5 rounded-xl border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-600 hover:text-slate-900 transition shadow-xs"
-                      title="Open 1–100 Room Grid Picker"
-                    >
-                      <LayoutGrid className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Visual 1–100 Room Grid Modal */}
-      {activeSubject && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-200 max-h-[90vh] flex flex-col">
-            <div className="flex items-start justify-between border-b border-slate-200 pb-4">
-              <div>
-                <div className="inline-flex items-center gap-1.5 text-xs font-semibold text-indigo-700 bg-indigo-50 px-2.5 py-0.5 rounded-full border border-indigo-200/60 mb-1">
-                  <Hash className="w-3 h-3" />
-                  <span>Interactive Room Selector (1–100)</span>
-                </div>
-                <h3 className="text-lg font-bold text-slate-900">
-                  Select Room for {activeSubject.name}
-                </h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Currently assigned to:{' '}
-                  <strong className="text-slate-800">
-                    {activeSubject.isLab ? 'Lab' : 'Room'} {activeSubject.classroomNumber || 1}
-                  </strong>
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setActivePickerSubjectId(null)}
-                className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition"
-              >
-                ✕
-              </button>
-            </div>
-
-            {/* Floor Tabs */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-4 pb-3">
-              {floorRanges.map((fr) => (
-                <button
-                  key={fr.floor}
-                  type="button"
-                  onClick={() => setPickerFloor(fr.floor)}
-                  className={`text-xs font-semibold p-2 rounded-xl border text-center transition ${
-                    pickerFloor === fr.floor
-                      ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
-                      : 'bg-slate-50 text-slate-600 hover:bg-slate-100 border-slate-200'
-                  }`}
-                >
-                  {fr.label}
-                </button>
-              ))}
-            </div>
-
-            {/* 1–100 Interactive Room Grid */}
-            <div className="flex-1 overflow-y-auto py-2">
-              <div className="grid grid-cols-5 sm:grid-cols-5 md:grid-cols-5 gap-2">
-                {Array.from(
-                  { length: 25 },
-                  (_, i) => (pickerFloor - 1) * 25 + i + 1
-                ).map((roomNum) => {
-                  const isCurrent = activeSubject.classroomNumber === roomNum;
-                  const occupyingSubjects = roomUsageMap[roomNum] || [];
-                  const isOccupiedByOther = occupyingSubjects.some(
-                    (s) => s.id !== activeSubject.id
-                  );
-
-                  return (
-                    <button
-                      key={roomNum}
-                      type="button"
-                      onClick={() => {
-                        handleRoomNumberChange(activeSubject.id, roomNum);
-                        setActivePickerSubjectId(null);
-                      }}
-                      className={`p-3 rounded-xl border text-center transition-all flex flex-col items-center justify-center gap-1 ${
-                        isCurrent
-                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-md ring-2 ring-indigo-300'
-                          : isOccupiedByOther
-                          ? 'bg-amber-50/80 hover:bg-amber-100 border-amber-300 text-amber-900'
-                          : 'bg-white hover:bg-indigo-50 border-slate-200 hover:border-indigo-300 text-slate-800'
-                      }`}
-                    >
-                      <div className="flex items-center gap-1">
-                        <span className="text-base font-bold">
-                          {roomNum}
-                        </span>
-                        {isCurrent && <Check className="w-3.5 h-3.5" />}
-                      </div>
-                      <span className="text-[10px] font-medium leading-none opacity-80">
-                        {isCurrent
-                          ? 'Selected'
-                          : isOccupiedByOther
-                          ? `Occupied (${occupyingSubjects[0].code})`
-                          : 'Available'}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* Modal Footer */}
-            <div className="pt-4 border-t border-slate-200 flex items-center justify-between text-xs text-slate-500">
-              <div className="flex items-center gap-3">
-                <span className="flex items-center gap-1">
-                  <span className="w-2.5 h-2.5 rounded bg-indigo-600 inline-block"></span>
-                  <span>Selected</span>
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-2.5 h-2.5 rounded bg-amber-400 inline-block"></span>
-                  <span>Shared</span>
-                </span>
-                <span className="flex items-center gap-1">
-                  <span className="w-2.5 h-2.5 rounded bg-slate-200 inline-block"></span>
-                  <span>Available</span>
-                </span>
-              </div>
-
-              <button
-                type="button"
-                onClick={() => setActivePickerSubjectId(null)}
-                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded-xl transition"
-              >
-                Close Picker
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Helpful Guidance Notice */}
-      <div className="p-4 bg-slate-100/90 rounded-2xl border border-slate-200/80 flex items-start gap-3 text-xs text-slate-600">
-        <Info className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-        <p>
-          Each subject is now linked with a designated classroom or lab hall numbered between{' '}
-          <strong className="text-slate-800">1 and 100</strong>. When the timetable schedule is
-          generated, these exact classroom numbers will be printed inside each period slot and
-          included in the export reports.
-        </p>
-      </div>
-
-      {/* Navigation Buttons */}
-      <div className="flex items-center justify-between pt-4 border-t border-slate-200/80">
-        <button
-          type="button"
-          id="back-to-step-4-btn"
-          onClick={onBack}
-          className="inline-flex items-center gap-2 text-sm font-semibold text-slate-600 hover:text-slate-900 bg-white hover:bg-slate-100 border border-slate-200 px-4 py-2.5 rounded-xl transition shadow-xs cursor-pointer"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          <span>Back to Subjects</span>
-        </button>
-
-        <button
-          type="button"
-          id="proceed-to-timetable-btn"
-          onClick={onNext}
-          className="inline-flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-emerald-600 hover:from-indigo-700 hover:to-emerald-700 text-white text-sm font-semibold px-7 py-2.5 rounded-xl shadow-md shadow-indigo-600/20 transition cursor-pointer"
-        >
-          <span>Ready to Generate Timetable</span>
-          <ArrowRight className="w-4 h-4" />
-        </button>
+      <div className="flex items-center justify-between border-t border-slate-200/80 pt-4">
+        <button type="button" onClick={onBack} className="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-600 shadow-xs transition hover:bg-slate-100"><ArrowLeft className="h-4 w-4" /> Back to Subjects</button>
+        <button type="button" onClick={handleNext} disabled={Boolean(missingTheory.length || missingLabs.length)} className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-emerald-600 px-7 py-2.5 text-sm font-semibold text-white shadow-md transition enabled:hover:from-indigo-700 enabled:hover:to-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"><span>Ready to Generate Timetable</span>{missingTheory.length || missingLabs.length ? <AlertTriangle className="h-4 w-4" /> : <><CheckCircle2 className="h-4 w-4" /><ArrowRight className="h-4 w-4" /></>}</button>
       </div>
     </div>
   );

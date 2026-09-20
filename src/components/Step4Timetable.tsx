@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import {
   AcademicYear,
   Department,
@@ -19,6 +19,7 @@ import { TeacherWorkloadModal } from './TeacherWorkloadModal';
 import { GenerationReportCard } from './GenerationReportCard';
 import { CrossDivisionMasterModal } from './CrossDivisionMasterModal';
 import { TeacherAbsenceReplacementModal } from './TeacherAbsenceReplacementModal';
+import { normalizeCellActivities } from '../utils/timetableActivities';
 import {
   CalendarCheck,
   Sparkles,
@@ -62,6 +63,7 @@ export const Step4Timetable: React.FC<Step4TimetableProps> = ({
   );
   const [showSettingsDrawer, setShowSettingsDrawer] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const generationInFlight = useRef(false);
   const [showMasterModal, setShowMasterModal] = useState(false);
 
   // Filters & Highlights
@@ -75,19 +77,25 @@ export const Step4Timetable: React.FC<Step4TimetableProps> = ({
 
   // Timetable Generator Handler with cross-division clash checking
   const handleGenerate = () => {
+    if (generationInFlight.current) return;
+    generationInFlight.current = true;
     setIsGenerating(true);
     setTimeout(() => {
-      const generated = generateNewTimetableGrid(
-        department,
-        year,
-        division,
-        subjects,
-        settings,
-        allTimetables
-      );
-      onSetTimetable(generated);
-      saveTimetable(generated);
-      setIsGenerating(false);
+      try {
+        const generated = generateNewTimetableGrid(
+          department,
+          year,
+          division,
+          subjects,
+          settings,
+          allTimetables
+        );
+        onSetTimetable(generated);
+        saveTimetable(generated);
+      } finally {
+        generationInFlight.current = false;
+        setIsGenerating(false);
+      }
     }, 450);
   };
 
@@ -130,25 +138,77 @@ export const Step4Timetable: React.FC<Step4TimetableProps> = ({
   // Export to CSV
   const handleExportCSV = () => {
     if (!timetable) return;
-    const headers = ['Day', ...timetable.timeSlots.map((s) => `${s.startTime}-${s.endTime}`)];
+    const headers = [
+      'Day',
+      'Period',
+      'Time',
+      'Subject',
+      'Code',
+      'Batch/Group',
+      'Activity Mode',
+      'Teacher',
+      'Room/Lab',
+      'Activity Type',
+      'Duration (periods)',
+    ];
     const rows: string[][] = [
       [`Department: ${department.name}`, `Year: ${year}`, `Division: ${division.name}`],
       headers,
     ];
 
     timetable.settings.days.forEach((day) => {
-      const row = [day];
       timetable.timeSlots.forEach((slot, idx) => {
         const cell = timetable.grid[day]?.[idx];
         if (slot.isBreak) {
-          row.push(slot.breakTitle || 'BREAK');
-        } else if (cell?.subject) {
-          row.push(`${cell.subject.name} (${cell.subject.teacherName})`);
+          rows.push([
+            day,
+            `Break ${slot.periodNumber}`,
+            `${slot.startTime}-${slot.endTime}`,
+            slot.breakTitle || 'BREAK',
+            '',
+            '',
+            '',
+            '',
+            '',
+            'Break',
+            '',
+          ]);
         } else {
-          row.push('Free Slot');
+          const activities = cell ? normalizeCellActivities(cell) : [];
+          if (activities.length === 0) {
+            rows.push([
+              day,
+              String(slot.periodNumber),
+              `${slot.startTime}-${slot.endTime}`,
+              'Free Slot',
+              '',
+              '',
+              '',
+              '',
+              '',
+              'Free',
+              '',
+            ]);
+            return;
+          }
+
+          activities.forEach((activity) => {
+            rows.push([
+              day,
+              String(slot.periodNumber),
+              `${slot.startTime}-${slot.endTime}`,
+              activity.subject.name,
+              activity.subject.code,
+              activity.studentGroup,
+              activity.activityMode || '',
+              activity.teacher || activity.subject.teacherName,
+              activity.room || (activity.isLab ? 'Lab TBD' : 'Room TBD'),
+              activity.activityType,
+              String(activity.durationPeriods || ''),
+            ]);
+          });
         }
       });
-      rows.push(row);
     });
 
     const csvContent =
@@ -651,7 +711,7 @@ export const Step4Timetable: React.FC<Step4TimetableProps> = ({
         <CrossDivisionMasterModal
           onClose={() => setShowMasterModal(false)}
           onSelectTimetableToView={(t) => onSetTimetable(t)}
-          currentTimetableId={timetable?.id}
+          currentTimetableId={timetable?.timetableKey}
         />
       )}
     </div>

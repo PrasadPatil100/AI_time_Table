@@ -93,6 +93,10 @@ export const GenerationReportCard: React.FC<GenerationReportCardProps> = ({
                 Allocated {metrics.allocatedPeriods} of {metrics.requiredPeriods} required periods;
                 {' '}{metrics.unallocatedPeriods} periods unallocated.
               </p>
+              <p className="text-[11px] text-slate-500 mt-1">
+                Division occupancy {metrics.divisionPlacedPeriods} of {metrics.divisionCapacity};
+                {' '}{metrics.divisionFreeSlots} free slots.
+              </p>
             </div>
           </div>
 

@@ -22,6 +22,10 @@ import {
   generateTimeSlots,
   isLabSubject,
 } from './timetableGenerator';
+import {
+  getDivisionWorkload,
+  getPlacedDivisionPeriods,
+} from './timetableOccupancy';
 
 type Allocation = { subject: Subject; group: StudentGroup };
 type Task = {
@@ -33,7 +37,6 @@ type Task = {
 };
 type Assignment = { allocation: Allocation; room: string; slot: number };
 
-const BATCHES: StudentGroup[] = ['TB1', 'TB2', 'TB3'];
 const TEACHING_SLOTS = [0, 1, 3, 4, 6, 7];
 const normalize = (value: string) => value.trim().toLowerCase();
 const groupFor = (subject: Subject): StudentGroup => subject.studentGroup || 'Whole Division';
@@ -85,6 +88,8 @@ export function generateNewTimetableGrid(
   };
   const timeSlots = generateTimeSlots(settings);
   const days = settings.days;
+  const divisionCapacity = days.length * TEACHING_SLOTS.length;
+  const divisionWorkload = getDivisionWorkload(subjects, divisionCapacity);
   const divisionId = divisionKey(department, year, division);
   const grid: Record<DayOfWeek, (TimetableCell | null)[]> = {
     Monday: [], Tuesday: [], Wednesday: [], Thursday: [], Friday: [], Saturday: [],
@@ -104,6 +109,7 @@ export function generateNewTimetableGrid(
   const roomBusy = new Set<string>();
   const batchBusy = new Set<string>();
   const divisionBusy = new Set<string>();
+  const batchGroups = new Set<StudentGroup>(subjects.filter((subject) => groupFor(subject) !== 'Whole Division').map(groupFor));
   const key = (value: string, day: DayOfWeek, slot: number) => resourceKey(value, day, slot);
   const markExternal = (timetable: GeneratedTimetable) => {
     const externalDivision = divisionKey(timetable.department, timetable.year, timetable.division);
@@ -118,7 +124,7 @@ export function generateNewTimetableGrid(
         }
         if (activity.room) roomBusy.add(key(activity.room, day as DayOfWeek, slot));
         const groups = activity.studentGroup === 'Whole Division'
-          ? BATCHES
+          ? Array.from(batchGroups)
           : [activity.studentGroup];
         groups.forEach((group) => batchBusy.add(`${batchKey(externalDivision, group)}::${day}::${slot}`));
         if (activity.studentGroup === 'Whole Division') {
@@ -143,18 +149,28 @@ export function generateNewTimetableGrid(
   let rejectedRooms = 0;
   let rejectedBatches = 0;
   let breakViolations = 0;
+  if (divisionWorkload.excessPeriods > 0) {
+    warnings.push(
+      `Required division occupancy is ${divisionWorkload.divisionRequiredPeriods}/${divisionCapacity} periods; ${divisionWorkload.excessPeriods} periods exceed weekly capacity. Backtracking was skipped.`
+    );
+  }
 
+  const configuredLabRooms = Array.from(new Set(subjects.flatMap((subject) => [
+    ...(subject.suitableRooms || []).filter((room) => /^lab\s/i.test(room)),
+    ...(subject.classroomNumber && (subject.isLab || subject.roomType === 'lab')
+      ? [`Lab ${subject.classroomNumber}`]
+      : []),
+  ])));
   const rooms = (subject: Subject) => {
     const type = roomTypeFor(subject);
-    const compatible = Array.from(new Set(subjects.flatMap((candidate) => [
-      ...(candidate.suitableRooms || []),
-      candidate.classroomNumber
-        ? `${roomTypeFor(candidate) === 'lab' ? 'Lab' : 'Room'} ${candidate.classroomNumber}`
-        : '',
-    ]).filter(Boolean))).filter((room) => {
-      const lab = /^lab\s/i.test(room);
-      return type === 'any' || (type === 'lab' ? lab : !lab);
-    });
+    const compatible = type === 'lab'
+      ? configuredLabRooms
+      : Array.from(new Set(subjects.flatMap((candidate) => [
+        ...(candidate.suitableRooms || []),
+        candidate.classroomNumber
+          ? `${roomTypeFor(candidate) === 'lab' ? 'Lab' : 'Room'} ${candidate.classroomNumber}`
+          : '',
+      ]).filter(Boolean))).filter((room) => !/^lab\s/i.test(room));
     const assigned = subject.classroomNumber
       ? `${type === 'lab' ? 'Lab' : 'Room'} ${subject.classroomNumber}`
       : '';
@@ -171,7 +187,7 @@ export function generateNewTimetableGrid(
     : [[0, 1], [3, 4], [6, 7]];
   const batchOccupied = (group: StudentGroup, day: DayOfWeek, slot: number) => {
     if (group === 'Whole Division') {
-      return divisionBusy.has(`${divisionId}::${day}::${slot}`) || BATCHES.some((batch) =>
+      return divisionBusy.has(`${divisionId}::${day}::${slot}`) || Array.from(batchGroups).some((batch) =>
         batchBusy.has(`${batchKey(divisionId, batch)}::${day}::${slot}`) ||
         localBatchBusy.has(`${batchKey(divisionId, batch)}::${day}::${slot}`)
       );
@@ -187,10 +203,11 @@ export function generateNewTimetableGrid(
     subjects.forEach((subject) => {
       const group = groupFor(subject);
       const mode = modeFor(subject);
-      let logical = group === 'Whole Division' ? `whole:${subject.id}` : `batch:${batchKeyFor(subject)}`;
-      if (mode !== 'WHOLE_DIVISION' && subject.activityGroupId) {
-        logical = `${mode.toLowerCase()}:${subject.activityGroupId}`;
-      }
+      const logical = group === 'Whole Division'
+        ? `whole:${subject.id}`
+        : subject.activityGroupId
+          ? `${mode.toLowerCase()}:${subject.activityGroupId}`
+          : `batch:${subject.id}`;
       if (!groups.has(logical)) groups.set(logical, []);
       groups.get(logical)!.push({ subject, group });
     });
@@ -204,11 +221,15 @@ export function generateNewTimetableGrid(
         ? allocations.map((allocation) => [allocation])
         : [allocations];
       taskGroups.forEach((taskAllocations, groupIndex) => {
-        const rounds = Math.max(...taskAllocations.map(({ subject }) =>
-          Math.ceil(Math.max(0, subject.periodsPerWeek) / durationFor(subject))));
+        const sessionsFor = (subject: Subject) => {
+          const requiredPeriods = Math.max(0, subject.periodsPerWeek);
+          const duration = durationFor(subject);
+          return duration === 2 ? Math.floor(requiredPeriods / 2) : requiredPeriods;
+        };
+        const rounds = Math.max(...taskAllocations.map(({ subject }) => sessionsFor(subject)));
         for (let round = 0; round < rounds; round++) {
           const active = taskAllocations.filter(({ subject }) =>
-            round * durationFor(subject) < Math.max(0, subject.periodsPerWeek));
+            round < sessionsFor(subject));
           if (!active.length) continue;
           tasks.push({
             key: `${logical}:${groupIndex}:${round}`,
@@ -390,10 +411,24 @@ export function generateNewTimetableGrid(
     restore(bestState);
     return bestScore;
   };
-  search(0);
+  if (divisionWorkload.excessPeriods === 0) search(0);
+  placedSubjectPeriods.clear();
+  days.forEach((day) => TEACHING_SLOTS.forEach((slot) => {
+    const cell = grid[day][slot];
+    if (!cell || cell.isBreak) return;
+    const activities = cell.activities?.length
+      ? cell.activities
+      : cell.subject ? [activityFor(cell.subject, cell.room || '')] : [];
+    activities.forEach((activity) => {
+      placedSubjectPeriods.set(
+        activity.subject.id,
+        (placedSubjectPeriods.get(activity.subject.id) || 0) + 1
+      );
+    });
+  }));
   subjects.forEach((subject) => {
     const required = Math.max(0, subject.periodsPerWeek);
-    const allocated = placedSubjectPeriods.get(subject.id) || 0;
+    const allocated = Math.min(required, placedSubjectPeriods.get(subject.id) || 0);
     if (allocated >= required) return;
     unplaced.push({
       subjectId: subject.id,
@@ -402,7 +437,9 @@ export function generateNewTimetableGrid(
       teacherName: subject.teacherName,
       requestedPeriods: required,
       placedPeriods: allocated,
-      reason: 'No valid deterministic block satisfied all teacher, room, batch, division, and break constraints.',
+      reason: divisionWorkload.excessPeriods > 0
+        ? 'Required division occupancy exceeds the available weekly capacity.'
+        : 'No valid deterministic block satisfied all teacher, room, batch, division, and break constraints.',
     });
     warnings.push(`${subject.name}: placed ${allocated}/${required} periods.`);
   });
@@ -418,9 +455,16 @@ export function generateNewTimetableGrid(
     activities.forEach((activity) => { if (activity.isLab) labPeriods++; else lecturePeriods++; });
   }));
 
-  const totalRequestedPeriods = subjects.reduce((sum, subject) => sum + Math.max(0, subject.periodsPerWeek), 0);
-  const totalPlacedPeriods = lecturePeriods + labPeriods;
-  const freeSlots = days.length * TEACHING_SLOTS.length - filledSlots;
+  const totalRequestedPeriods = divisionWorkload.individualRequiredPeriods;
+  const totalPlacedPeriods = subjects.reduce(
+    (total, subject) => total + Math.min(
+      Math.max(0, subject.periodsPerWeek),
+      placedSubjectPeriods.get(subject.id) || 0
+    ),
+    0
+  );
+  const divisionPlacedPeriods = getPlacedDivisionPeriods(grid, days);
+  const freeSlots = divisionCapacity - divisionPlacedPeriods;
   const labSeen = new Set<string>();
   days.forEach((day) => TEACHING_SLOTS.forEach((slot) => {
     const cell = grid[day][slot];
@@ -469,11 +513,15 @@ export function generateNewTimetableGrid(
     });
   }));
 
-  const summary = `Allocated ${totalPlacedPeriods}/${totalRequestedPeriods} periods; unallocated ${Math.max(0, totalRequestedPeriods - totalPlacedPeriods)}; free slots ${freeSlots}; rejected teacher ${rejectedTeachers}, room ${rejectedRooms}, batch ${rejectedBatches}, break ${breakViolations}.`;
+  const summary = `Allocated ${totalPlacedPeriods}/${totalRequestedPeriods} individual periods; division occupancy ${divisionPlacedPeriods}/${divisionCapacity}; unallocated ${Math.max(0, totalRequestedPeriods - totalPlacedPeriods)} individual periods; free slots ${freeSlots}; rejected teacher ${rejectedTeachers}, room ${rejectedRooms}, batch ${rejectedBatches}, break ${breakViolations}.`;
   warnings.push(summary);
   const generationReport: GenerationReport = {
     totalRequestedPeriods,
     totalPlacedPeriods,
+    divisionRequiredPeriods: divisionWorkload.divisionRequiredPeriods,
+    divisionPlacedPeriods,
+    divisionCapacity,
+    divisionFreeSlots: freeSlots,
     clashesAvoided: rejectedTeachers + rejectedRooms + rejectedBatches,
     clashDetails: clashes,
     unplacedSubjects: unplaced,

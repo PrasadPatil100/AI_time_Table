@@ -164,6 +164,10 @@ export interface LabAllocation {
 export interface GenerationReport {
   totalRequestedPeriods: number;
   totalPlacedPeriods: number;
+  divisionRequiredPeriods?: number;
+  divisionPlacedPeriods?: number;
+  divisionCapacity?: number;
+  divisionFreeSlots?: number;
   clashesAvoided: number;
   clashDetails: ClashDetail[];
   unplacedSubjects: UnplacedSubject[];

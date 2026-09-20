@@ -5,10 +5,18 @@ import {
   TimetableCell,
 } from '../types';
 import { normalizeCellActivities } from './timetableActivities';
+import {
+  getDivisionWorkload,
+  getPlacedDivisionPeriods,
+} from './timetableOccupancy';
 
 export interface TimetableReportingMetrics {
   requiredPeriods: number;
   allocatedPeriods: number;
+  divisionRequiredPeriods: number;
+  divisionPlacedPeriods: number;
+  divisionCapacity: number;
+  divisionFreeSlots: number;
   unallocatedPeriods: number;
   requiredLabSessions: number;
   labSessions: number;
@@ -77,6 +85,8 @@ export function getTimetableReportingMetrics(
     ),
     0
   );
+  const divisionCapacity = timetable.stats?.totalWeeklySlots || timetable.settings.days.length * 6;
+  const divisionWorkload = getDivisionWorkload(timetable.subjects, divisionCapacity);
 
   let lecturePeriods = 0;
   let labOccupiedPeriods = 0;
@@ -84,6 +94,7 @@ export function getTimetableReportingMetrics(
   let batchAllocations = 0;
   let wholeDivisionActivities = 0;
   let occupiedSlots = 0;
+  const placedSubjectPeriods = new Map<string, number>();
 
   timetable.settings.days.forEach((day) => {
     const cells = timetable.grid[day] || [];
@@ -94,6 +105,10 @@ export function getTimetableReportingMetrics(
       occupiedSlots += 1;
 
       activities.forEach((activity) => {
+        placedSubjectPeriods.set(
+          activity.subject.id,
+          (placedSubjectPeriods.get(activity.subject.id) || 0) + 1
+        );
         const lab = isLabActivity(activity);
         if (lab) {
           labOccupiedPeriods += 1;
@@ -112,15 +127,23 @@ export function getTimetableReportingMetrics(
     });
   });
 
-  const allocatedPeriods = lecturePeriods + labOccupiedPeriods;
-  const freeSlots = timetable.stats?.freeSlots ?? Math.max(
-    0,
-    timetable.stats?.totalWeeklySlots - occupiedSlots
+  const allocatedPeriods = timetable.subjects.reduce(
+    (total, subject) => total + Math.min(
+      Math.max(0, subject.periodsPerWeek || 0),
+      placedSubjectPeriods.get(subject.id) || 0
+    ),
+    0
   );
+  const divisionPlacedPeriods = getPlacedDivisionPeriods(timetable.grid, timetable.settings.days);
+  const freeSlots = Math.max(0, divisionCapacity - divisionPlacedPeriods);
 
   return {
     requiredPeriods,
     allocatedPeriods,
+    divisionRequiredPeriods: divisionWorkload.divisionRequiredPeriods,
+    divisionPlacedPeriods,
+    divisionCapacity,
+    divisionFreeSlots: freeSlots,
     unallocatedPeriods: Math.max(0, requiredPeriods - allocatedPeriods),
     requiredLabSessions,
     labSessions,
