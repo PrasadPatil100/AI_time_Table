@@ -6,11 +6,10 @@ import {
 } from '../types';
 import {
   Clock,
-  MapPin,
-  User,
   FlaskConical,
   BookOpen,
 } from 'lucide-react';
+import { normalizeCellActivities } from '../utils/timetableActivities';
 
 interface TimetableGridProps {
   timetable: GeneratedTimetable;
@@ -154,18 +153,22 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({
                     }
 
                     // Regular teaching slot
-                    const subject = cell?.subject;
-                    const activities = cell?.activities || [];
+                    const activities = cell ? normalizeCellActivities(cell) : [];
+                    const subject = activities[0]?.subject;
                     const isMatchedSubject =
-                      highlightSubjectId && subject?.id === highlightSubjectId;
+                      highlightSubjectId && activities.some((activity) =>
+                        activity.subject.id === highlightSubjectId
+                      );
                     const isMatchedTeacher =
                       highlightTeacher &&
-                      subject?.teacherName?.toLowerCase() === highlightTeacher.toLowerCase();
+                      activities.some((activity) =>
+                        activity.teacher.toLowerCase() === highlightTeacher.toLowerCase()
+                      );
                     const isDimmed =
                       (highlightSubjectId && !isMatchedSubject) ||
                       (highlightTeacher && !isMatchedTeacher);
 
-                    const isLab = cell?.isLabSession || subject?.isLab;
+                    const isLab = cell?.isLabSession || activities.some((activity) => activity.isLab);
 
                     return (
                       <td
@@ -175,7 +178,7 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({
                           isDimmed ? 'opacity-30' : 'opacity-100'
                         }`}
                       >
-                        {subject ? (
+                        {activities.length > 0 ? (
                           <div
                             id={`cell-${day}-${sIdx}`}
                             onClick={() => cell && onCellClick(cell)}
@@ -188,13 +191,15 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({
                                 ? 'ring-2 ring-indigo-600 shadow-md scale-102'
                                 : 'hover:shadow-md hover:scale-101'
                             }`}
-                            title={`Click to view/edit slot • ${subject.name} (${subject.teacherName})`}
+                            title={`Click to view/edit slot • ${activities.map((activity) => activity.subject.name).join(', ')}`}
                           >
                             <div>
-                              {/* Subject Code & Room & Lab Indicator */}
+                              {/* Activity count and lab indicator */}
                               <div className="flex items-center justify-between gap-1 mb-1.5">
                                 <span className="font-mono text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-white text-slate-700 border border-slate-200/70 shadow-2xs">
-                                  {subject.code}
+                                  {activities.length === 1
+                                    ? subject?.code
+                                    : `${activities.length} Activities`}
                                 </span>
                                 <div className="flex items-center gap-1">
                                   {isLab ? (
@@ -214,54 +219,42 @@ export const TimetableGrid: React.FC<TimetableGridProps> = ({
                                     </span>
                                   )}
 
-                                  <span
-                                    className={`text-[10px] flex items-center gap-0.5 font-bold px-1.5 py-0.5 rounded shadow-2xs ${
-                                      isLab
-                                        ? 'bg-emerald-100 text-emerald-900 border border-emerald-300'
-                                        : 'bg-slate-100 text-slate-800 border border-slate-200'
-                                    }`}
-                                  >
-                                    <MapPin className="w-2.5 h-2.5 opacity-70" />
-                                    <span>
-                                      {cell?.room ||
-                                        (subject.classroomNumber
-                                          ? `${isLab ? 'Lab' : 'Room'} ${subject.classroomNumber}`
-                                          : 'Room 101')}
-                                    </span>
-                                  </span>
                                 </div>
                               </div>
 
-                              {/* Subject Name */}
-                              <h5
-                                className={`text-xs font-bold leading-snug line-clamp-2 ${
-                                  isLab ? 'text-purple-950' : subject.textClass || 'text-slate-900'
-                                }`}
-                              >
-                                {subject.name}
-                              </h5>
-                              {activities.length > 0 && (
-                                <div className="mt-2 space-y-1 border-t border-slate-200/60 pt-1.5">
-                                  {activities.map((activity) => (
-                                    <div
-                                      key={`${activity.studentGroup}-${activity.subject.id}-${activity.room}`}
-                                      className="flex items-center justify-between gap-2 text-[10px] text-slate-700"
-                                    >
-                                      <span className="font-bold shrink-0">{activity.studentGroup}</span>
-                                      <span className="truncate">{activity.subject.name} • {activity.teacher}</span>
-                                      <span className="font-semibold shrink-0">{activity.room || 'Room TBD'}</span>
+                              <div className="mt-2 space-y-1.5 border-t border-slate-200/60 pt-1.5">
+                                {activities.map((activity) => (
+                                  <div
+                                    key={`${activity.studentGroup}-${activity.subject.id}-${activity.room}`}
+                                    className="space-y-0.5 text-[10px] text-slate-700"
+                                  >
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="font-bold truncate">
+                                        {activity.subject.name} ({activity.subject.code})
+                                      </span>
+                                      <span className="font-semibold shrink-0">
+                                        {activity.room || 'Room TBD'}
+                                      </span>
                                     </div>
-                                  ))}
-                                </div>
-                              )}
+                                    <div className="flex items-center justify-between gap-2 text-[9px]">
+                                      <span className="font-bold shrink-0">
+                                        {activity.studentGroup}
+                                      </span>
+                                      <span className="truncate">
+                                        {activity.activityMode || activity.activityType} • {activity.teacher || 'Teacher TBD'}
+                                      </span>
+                                      {activity.isLab && (
+                                        <span className="font-semibold shrink-0">
+                                          {activity.durationPeriods} periods
+                                        </span>
+                                      )}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
                             </div>
 
-                            {/* Teacher Info */}
-                            <div className="mt-2 pt-1.5 border-t border-slate-200/50 flex items-center justify-between text-[11px]">
-                              <div className="flex items-center gap-1 text-slate-700 truncate font-semibold">
-                                <User className="w-3 h-3 text-slate-400 shrink-0" />
-                                <span className="truncate">{subject.teacherName}</span>
-                              </div>
+                            <div className="mt-2 pt-1.5 border-t border-slate-200/50 flex items-center justify-end text-[11px]">
                               <span className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] text-indigo-600 font-bold shrink-0">
                                 ✎
                               </span>
