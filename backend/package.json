@@ -1,0 +1,6 @@
+{
+  "type": "commonjs",
+  "dependencies": {
+    "@getbrevo/brevo": "^6.0.3"
+  }
+}
