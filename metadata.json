@@ -1,0 +1,7 @@
+{
+  "name": "Automatic Timetable Generator",
+  "description": "Automatic timetable generator for educational institutions with department selection, division mapping, teacher allocation, and smart schedule generation.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
+
